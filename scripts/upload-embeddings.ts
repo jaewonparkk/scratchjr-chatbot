@@ -48,7 +48,11 @@ type FeatureExtractionResult = {
       pooling: "mean";
       normalize: boolean;
     },
-  ) => Promise<FeatureExtractionResult>;
+  ) => Promise<unknown>;
+  
+  type EmbeddingOutput = {
+    data: ArrayLike<number>;
+  };
   
   type FeatureExtractorFactory = (
     task: "feature-extraction",
@@ -152,16 +156,17 @@ function createEmbeddingText(
 }
 
 async function createEmbedding(
-    extractor: FeatureExtractor,
-    text: string,
-  ): Promise<number[]> {
-    const result = await extractor(text, {
-      pooling: "mean",
-      normalize: true,
-    });
+  extractor: FeatureExtractor,
+  text: string,
+): Promise<number[]> {
+  const result = (await extractor(text, {
+    pooling: "mean",
+    normalize: true,
+  })) as EmbeddingOutput;
 
   const embedding = Array.from(
     result.data,
+    (value) => Number(value),
   );
 
   if (
@@ -266,13 +271,13 @@ async function main(): Promise<void> {
     "The first run may take longer because the model must be downloaded.",
   );
 
-  const extractor = await pipeline(
+  const extractor = (await pipeline(
     "feature-extraction",
     MODEL_NAME,
     {
       dtype: "fp32",
     },
-  );
+  )) as unknown as FeatureExtractor;
 
   console.log(
     "Embedding model loaded.",
