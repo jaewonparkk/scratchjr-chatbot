@@ -13,7 +13,8 @@ export type SearchResult = {
     | "docx"
     | "pdf"
     | "pptx"
-    | "image";
+    | "image"
+    | "markdown";
   section: string;
   page_number: number | null;
   slide_number: number | null;

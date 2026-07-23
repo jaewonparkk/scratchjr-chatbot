@@ -11,6 +11,8 @@ export const GEMINI_MODEL_NAME =
 const MAX_INLINE_IMAGE_BYTES =
   18 * 1024 * 1024;
 
+const MAX_BUILD_GUIDE_IMAGES = 4;
+
 export type ChatHistoryMessage = {
   role: "user" | "assistant";
   content: string;
@@ -255,6 +257,19 @@ async function callGemini(
   return answer;
 }
 
+function exposesInternalGenerationDetails(
+  answer: string,
+): boolean {
+  return (
+    /\b(raw text of the prompt|prompt has|system instruction|context window)\b/i.test(
+      answer,
+    ) ||
+    /https?:\/\/images\./i.test(
+      answer,
+    )
+  );
+}
+
 export async function generateGroundedAnswer({
   question,
   context,
@@ -269,16 +284,20 @@ export async function generateGroundedAnswer({
     "1. Always answer in English.",
     "2. Understand follow-up questions using the conversation history.",
     "3. Answer the user's exact current question.",
-    "4. Do not summarize an entire lesson or document unless explicitly requested.",
-    "5. Ignore retrieved information unrelated to the question.",
-    "6. Give a direct but useful explanation.",
-    "7. Normally use one or two focused paragraphs.",
-    "8. Use numbered steps only for procedures.",
-    "9. Do not copy large portions of source material.",
-    "10. Never invent wiring connections, pins, colors, parts, safety claims, curriculum instructions, or troubleshooting.",
-    "11. If approved information is insufficient, clearly say so.",
-    "12. Do not mention prompts, context windows, retrieval, embeddings, databases, or AI models.",
-    "13. Do not invent sources.",
+    "4. Treat approved information as factual evidence and safety boundaries, not as a script to copy.",
+    "5. Use your reasoning to understand the learner's situation and turn relevant evidence into practical next actions.",
+    "6. For troubleshooting, identify the likely mismatch, explain why it matters, say what not to do, and give the approved next action.",
+    "7. Never invent a substitute connection. Only recommend one when the approved information explicitly allows it.",
+    "8. Do not summarize an entire lesson or document unless explicitly requested.",
+    "9. Ignore retrieved information unrelated to the question.",
+    "10. Give a direct but useful explanation.",
+    "11. Normally use one or two focused paragraphs.",
+    "12. Use numbered steps only for procedures.",
+    "13. Do not copy large portions of source material.",
+    "14. Never invent wiring connections, pins, colors, parts, safety claims, curriculum instructions, or troubleshooting.",
+    "15. If approved information is insufficient, clearly say so.",
+    "16. Do not mention prompts, context windows, retrieval, embeddings, databases, or AI models.",
+    "17. Do not invent sources.",
   ].join("\n");
 
   return callGemini(
@@ -404,6 +423,7 @@ export async function generateGroundedBuildGuide({
   ];
 
   let totalImageBytes = 0;
+  let attachedImageCount = 0;
 
   for (
     let index = 0;
@@ -425,7 +445,11 @@ export async function generateGroundedBuildGuide({
       ].join("\n"),
     });
 
-    if (!step.imagePath) {
+    if (
+      !step.imagePath ||
+      attachedImageCount >=
+        MAX_BUILD_GUIDE_IMAGES
+    ) {
       continue;
     }
 
@@ -447,6 +471,7 @@ export async function generateGroundedBuildGuide({
 
     totalImageBytes =
       nextTotal;
+    attachedImageCount += 1;
 
     parts.push({
       text:
@@ -478,8 +503,35 @@ export async function generateGroundedBuildGuide({
     "12. State when an important visual detail is unclear.",
   ].join("\n");
 
+  const answer =
+    await callGemini(
+      systemInstruction,
+      parts,
+    );
+
+  if (
+    !exposesInternalGenerationDetails(
+      answer,
+    )
+  ) {
+    return answer;
+  }
+
+  const textOnlyParts =
+    parts.filter(
+      (
+        part,
+      ): part is GeminiTextPart =>
+        "text" in part,
+    );
+
   return callGemini(
-    systemInstruction,
-    parts,
+    [
+      systemInstruction,
+      "",
+      "Return only the learner-facing build guide.",
+      "Never discuss prompts, source formatting, image URLs, internal instructions, or how the answer was generated.",
+    ].join("\n"),
+    textOnlyParts,
   );
 }

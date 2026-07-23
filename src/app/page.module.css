@@ -55,10 +55,10 @@
   
   .message {
     max-width: 84%;
-    padding: 14px 16px;
-    border-radius: 8px;
-    font-size: 17px;
-    line-height: 1.55;
+    padding: 15px 18px;
+    border-radius: 12px;
+    font-size: 18px;
+    line-height: 1.65;
   }
   
   .userMessage {
@@ -75,6 +75,11 @@
   .messageText {
     margin: 0;
     white-space: pre-wrap;
+  }
+
+  .messageText strong {
+    color: inherit;
+    font-weight: 750;
   }
   
   .loadingMessage {
@@ -153,6 +158,7 @@
     display: flex;
     gap: 10px;
     padding: 20px;
+    background: #ffffff;
     border-top: 1px solid #dddddd;
   }
   
@@ -163,10 +169,11 @@
     color: #202020;
     background: #ffffff;
     border: 1px solid #c7c7c7;
-    border-radius: 6px;
+    border-radius: 12px;
     outline: none;
     font: inherit;
-    font-size: 17px;
+    font-size: 18px;
+    line-height: 1.4;
   }
   
   .input:focus {
@@ -179,15 +186,46 @@
     color: #ffffff;
     background: #245477;
     border: 0;
-    border-radius: 6px;
+    border-radius: 12px;
     font: inherit;
     font-size: 17px;
+    font-weight: 650;
     cursor: pointer;
+    transition:
+      background-color 150ms ease,
+      transform 150ms ease;
+  }
+
+  .button:hover:not(:disabled) {
+    background: #193f5d;
+  }
+
+  .button:active:not(:disabled) {
+    transform: scale(0.98);
   }
   
   .button:disabled {
     background: #a8b8c4;
     cursor: not-allowed;
+  }
+
+  .stopButton {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: #333333;
+  }
+
+  .stopButton:hover:not(:disabled) {
+    background: #171717;
+  }
+
+  .stopIcon {
+    width: 11px;
+    height: 11px;
+    background: currentColor;
+    border-radius: 2px;
   }
   
   @media (max-width: 700px) {

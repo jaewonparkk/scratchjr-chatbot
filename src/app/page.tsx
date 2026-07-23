@@ -2,6 +2,7 @@
 
 import type {
   FormEvent,
+  ReactNode,
 } from "react";
 
 import {
@@ -59,6 +60,35 @@ function createMessageId(): string {
   ].join("-");
 }
 
+function renderMessageText(
+  text: string,
+): ReactNode {
+  const normalizedMarkdown =
+    text.replace(
+      /^#{1,6}\s+(.+)$/gm,
+      "**$1**",
+    );
+
+  return normalizedMarkdown
+    .split(
+      /(\*\*[\s\S]+?\*\*)/g,
+    )
+    .map((part, index) => {
+      if (
+        part.startsWith("**") &&
+        part.endsWith("**")
+      ) {
+        return (
+          <strong key={index}>
+            {part.slice(2, -2)}
+          </strong>
+        );
+      }
+
+      return part;
+    });
+}
+
 export default function Home() {
   const [
     messages,
@@ -87,6 +117,11 @@ export default function Home() {
       null,
     );
 
+  const abortControllerRef =
+    useRef<AbortController | null>(
+      null,
+    );
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({
       behavior: "smooth",
@@ -95,6 +130,19 @@ export default function Home() {
     messages,
     isLoading,
   ]);
+
+  useEffect(
+    () => () => {
+      abortControllerRef.current
+        ?.abort();
+    },
+    [],
+  );
+
+  function stopGenerating() {
+    abortControllerRef.current
+      ?.abort();
+  }
 
   async function handleSubmit(
     event:
@@ -130,6 +178,12 @@ export default function Home() {
     setInput("");
     setIsLoading(true);
 
+    const controller =
+      new AbortController();
+
+    abortControllerRef.current =
+      controller;
+
     try {
       const response =
         await fetch(
@@ -142,9 +196,24 @@ export default function Home() {
                 "application/json",
             },
 
+            signal:
+              controller.signal,
+
             body:
               JSON.stringify({
                 question,
+                history: messages
+                  .filter(
+                    (message) =>
+                      message.id !==
+                      "welcome",
+                  )
+                  .slice(-12)
+                  .map((message) => ({
+                    role: message.role,
+                    content:
+                      message.text,
+                  })),
               }),
           },
         );
@@ -198,6 +267,10 @@ export default function Home() {
         ],
       );
     } catch (error: unknown) {
+      if (controller.signal.aborted) {
+        return;
+      }
+
       const errorMessage =
         error instanceof Error
           ? error.message
@@ -219,7 +292,15 @@ export default function Home() {
         ],
       );
     } finally {
-      setIsLoading(false);
+      if (
+        abortControllerRef.current ===
+        controller
+      ) {
+        abortControllerRef.current =
+          null;
+
+        setIsLoading(false);
+      }
     }
   }
 
@@ -266,7 +347,9 @@ export default function Home() {
                       styles.messageText
                     }
                   >
-                    {message.text}
+                    {renderMessageText(
+                      message.text,
+                    )}
                   </p>
 
                   {message.images &&
@@ -413,18 +496,37 @@ export default function Home() {
             disabled={isLoading}
           />
 
-          <button
-            className={styles.button}
-            type="submit"
-            disabled={
-              isLoading ||
-              !input.trim()
-            }
-          >
-            {isLoading
-              ? "Sending..."
-              : "Send"}
-          </button>
+          {isLoading ? (
+            <button
+              className={[
+                styles.button,
+                styles.stopButton,
+              ].join(" ")}
+              type="button"
+              onClick={
+                stopGenerating
+              }
+              aria-label="Stop generating"
+            >
+              <span
+                className={
+                  styles.stopIcon
+                }
+                aria-hidden="true"
+              />
+              Stop
+            </button>
+          ) : (
+            <button
+              className={styles.button}
+              type="submit"
+              disabled={
+                !input.trim()
+              }
+            >
+              Send
+            </button>
+          )}
         </form>
       </section>
     </main>

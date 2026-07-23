@@ -17,6 +17,11 @@ import {
   supabaseAdmin,
 } from "@/lib/supabase/admin";
 
+import {
+  CONNECTOR_TROUBLESHOOTING_CONTENT,
+  needsConnectorTroubleshooting,
+} from "@/lib/rag/troubleshooting";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -205,8 +210,16 @@ function normalizeQuestion(
       "microbit",
     )
     .replace(
+      /\b(mcirobit|micorbit|mirco?bit)\b/g,
+      "microbit",
+    )
+    .replace(
       /\bsteop\b/g,
       "step",
+    )
+    .replace(
+      /\bllesson\b/g,
+      "lesson",
     )
     .replace(/\s+/g, " ")
     .trim();
@@ -248,6 +261,34 @@ function extractStepNumber(
     extractStepNumbers(text);
 
   return numbers[0] ?? null;
+}
+
+function extractLessonNumber(
+  text: string,
+): number | null {
+  const normalized =
+    normalizeQuestion(text);
+
+  const match =
+    normalized.match(
+      /\blesson\s*#?\s*(\d{1,2})\b/,
+    );
+
+  if (!match) {
+    return null;
+  }
+
+  const lessonNumber =
+    Number(match[1]);
+
+  return (
+    Number.isInteger(
+      lessonNumber,
+    ) &&
+    lessonNumber >= 1
+  )
+    ? lessonNumber
+    : null;
 }
 
 function detectTopicInText(
@@ -468,6 +509,33 @@ function isStepFollowUp(
   );
 }
 
+function isGuideClarificationResponse(
+  question: string,
+  history: ChatHistoryMessage[],
+): boolean {
+  const selectedTopic =
+    detectTopicInText(question);
+
+  const previousMessage =
+    history.at(-1);
+
+  return (
+    (
+      selectedTopic ===
+        "microbit-build" ||
+      selectedTopic ===
+        "download-instructions"
+    ) &&
+    previousMessage?.role ===
+      "assistant" &&
+    normalizeQuestion(
+      previousMessage.content,
+    ).includes(
+      "which guide do you mean",
+    )
+  );
+}
+
 function normalizeSearchResult(
   result: Partial<SearchResult>,
 ): SearchResult {
@@ -673,6 +741,47 @@ async function searchDownloadSteps(): Promise<
   );
 }
 
+async function searchLesson(
+  lessonNumber: number,
+): Promise<SearchResult[]> {
+  const {
+    data,
+    error,
+  } = await supabaseAdmin
+    .from("documents")
+    .select(DOCUMENT_COLUMNS)
+    .ilike(
+      "source_file",
+      "%Lessons_01-36_REVISED.docx%",
+    )
+    .ilike(
+      "title",
+      `Lesson ${lessonNumber}:%`,
+    )
+    .order(
+      "id",
+      {
+        ascending: true,
+      },
+    );
+
+  if (error) {
+    throw new Error(
+      `Lesson search failed: ${error.message}`,
+    );
+  }
+
+  if (!Array.isArray(data)) {
+    return [];
+  }
+
+  return data.map((item) =>
+    normalizeSearchResult(
+      item as Partial<SearchResult>,
+    ),
+  );
+}
+
 function isFullBuildGuideRequest(
   question: string,
   topic: ConversationTopic,
@@ -778,7 +887,7 @@ function isImageRequest(
     normalizeQuestion(question);
 
   return (
-    /\b(image|images|picture|pictures|photo|photos|preview|visual|visuals)\b/.test(
+    /\b(image+|images|picture|pictures|photo|photos|preview|visual|visuals)\b/.test(
       normalized,
     ) ||
     /\blook like\b/.test(
@@ -794,6 +903,26 @@ function isImageRequest(
       normalized,
     )
   );
+}
+
+function isBareImageNumberRequest(
+  question: string,
+): boolean {
+  const compactQuestion =
+    question
+      .toLowerCase()
+      .replace(
+        /[^a-z0-9]/g,
+        "",
+      );
+
+  return /^(image+|img|picture|photo)\d{1,3}$/.test(
+    compactQuestion,
+  );
+}
+
+function ambiguousImageNumberAnswer(): string {
+  return "I can’t identify an approved image from an image number alone. Please name the guide, lesson, or build step you mean.";
 }
 
 function chooseTextContextResults(
@@ -981,10 +1110,11 @@ function buildSources(
 
   for (const result of results) {
     const key = [
-      result.chunk_id,
       result.source_file,
       result.page_number,
       result.slide_number,
+      result.title,
+      result.section,
     ].join("|");
 
     if (seen.has(key)) {
@@ -1104,6 +1234,35 @@ function insufficientAnswer(): string {
   return "I could not find enough verified information in the approved materials to answer that question.";
 }
 
+function createConnectorTroubleshootingResult(
+  similarity: number,
+): SearchResult {
+  return {
+    id: -1,
+    chunk_id:
+      "approved-connector-troubleshooting",
+    title:
+      "Approved Connector Troubleshooting",
+    content:
+      CONNECTOR_TROUBLESHOOTING_CONTENT,
+    source_file:
+      "knowledge/approved/connector-troubleshooting.md",
+    file_type: "markdown",
+    section:
+      "Connector mismatch",
+    page_number: null,
+    slide_number: null,
+    image_paths: [],
+    should_display_image: false,
+    metadata: {
+      approved: true,
+      category:
+        "troubleshooting",
+    },
+    similarity,
+  };
+}
+
 export async function POST(
   request: Request,
 ) {
@@ -1132,6 +1291,31 @@ export async function POST(
       );
     }
 
+    /*
+     * Image numbers are not globally unique across the
+     * approved documents. Do not run semantic retrieval
+     * for a bare request such as "image 1?" because it can
+     * return an unrelated high-similarity image.
+     */
+    if (
+      isBareImageNumberRequest(
+        question,
+      )
+    ) {
+      const answer =
+        ambiguousImageNumberAnswer();
+
+      return Response.json({
+        answer,
+        reply: answer,
+        grounded: false,
+        sources: [],
+        images: [],
+        generation:
+          routerGeneration(),
+      });
+    }
+
     const currentTopic =
       detectTopicInText(
         question,
@@ -1150,7 +1334,82 @@ export async function POST(
       resolveRequestedStep(
         question,
         history,
+      ) ??
+      (
+        isGuideClarificationResponse(
+          question,
+          history,
+        )
+          ? findLastReferencedStep(
+              history,
+            )
+          : null
       );
+
+    const requestedLesson =
+      extractLessonNumber(
+        question,
+      );
+
+    /*
+     * Numbered lessons must use an exact title lookup.
+     * Semantic retrieval can otherwise mix Lesson 1 with
+     * Lessons 12, 19, 21, and other nearby numbers.
+     */
+    if (requestedLesson !== null) {
+      const lessonResults =
+        await searchLesson(
+          requestedLesson,
+        );
+
+      if (
+        lessonResults.length === 0
+      ) {
+        const answer =
+          `I could not find Lesson ${requestedLesson} in the approved curriculum materials.`;
+
+        return Response.json({
+          answer,
+          reply: answer,
+          grounded: false,
+          sources: [],
+          images: [],
+          generation:
+            approvedGeneration(),
+        });
+      }
+
+      const answer =
+        await generateGroundedAnswer({
+          question,
+          context:
+            buildContext(
+              lessonResults,
+            ),
+          history,
+        });
+
+      return Response.json({
+        answer,
+        reply: answer,
+        grounded: true,
+        sources:
+          buildSources(
+            lessonResults,
+          ),
+        images:
+          isImageRequest(
+            question,
+          )
+            ? buildImages(
+                lessonResults,
+                2,
+              )
+            : [],
+        generation:
+          geminiGeneration(),
+      });
+    }
 
     /*
      * A request for multiple step images must run
@@ -1273,9 +1532,15 @@ export async function POST(
      */
     if (
       requestedStep !== null &&
-      isStepFollowUp(
-        question,
-      )
+      (
+        isStepFollowUp(
+          question,
+        ) ||
+        resolvedTopic ===
+          "microbit-build" ||
+        resolvedTopic ===
+          "download-instructions"
+        )
     ) {
       if (
         resolvedTopic === null
@@ -1481,6 +1746,23 @@ export async function POST(
         },
       );
 
+    const approvedTroubleshooting =
+      needsConnectorTroubleshooting(
+        question,
+      )
+        ? [
+            createConnectorTroubleshootingResult(
+              searchResults[0]
+                ?.similarity ?? 1,
+            ),
+          ]
+        : [];
+
+    const groundedSearchResults = [
+      ...approvedTroubleshooting,
+      ...searchResults,
+    ];
+
     /*
      * Direct image requests return approved images
      * without calling Gemini.
@@ -1488,7 +1770,7 @@ export async function POST(
     if (imageRequest) {
       const imageResults =
         chooseImageResults(
-          searchResults,
+          groundedSearchResults,
           retrievalQuestion,
           2,
         );
@@ -1538,7 +1820,7 @@ export async function POST(
 
     const contextResults =
       chooseTextContextResults(
-        searchResults,
+        groundedSearchResults,
       );
 
     if (
