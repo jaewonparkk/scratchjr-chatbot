@@ -1,9 +1,17 @@
 import path from "node:path";
 
 import {
+  extractStepNumber,
+  searchBuildSteps,
   searchDocuments,
   type SearchResult,
 } from "@/lib/rag/search";
+
+import {
+  parseUserIntent,
+  type IntentTopic,
+  type ParsedIntent,
+} from "@/lib/rag/intent";
 
 import {
   GEMINI_MODEL_NAME,
@@ -17,19 +25,16 @@ import {
   supabaseAdmin,
 } from "@/lib/supabase/admin";
 
-import {
-  CONNECTOR_TROUBLESHOOTING_CONTENT,
-  needsConnectorTroubleshooting,
-} from "@/lib/rag/troubleshooting";
-
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const BUILD_SOURCE_PATTERN =
-  "%BotsBuildFeb2026.pdf%";
-
 const DOWNLOAD_SOURCE_PATTERN =
   "%Blocks and Bots Download Instructions.pptx%";
+
+const LESSON_SOURCE_PATTERNS = [
+  "%Lessons_01-36_REVISED.docx%",
+  "%Lesson_Supplements - ScratchJr Blocks & Bots (1).pptx%",
+];
 
 const DOCUMENT_COLUMNS = [
   "id",
@@ -46,7 +51,7 @@ const DOCUMENT_COLUMNS = [
   "metadata",
 ].join(",");
 
-type ConversationTopic =
+type GuideTopic =
   | "microbit-build"
   | "download-instructions"
   | "pairing"
@@ -196,344 +201,20 @@ function readHistory(
   return history.slice(-12);
 }
 
-function normalizeQuestion(
-  question: string,
-): string {
-  return question
-    .toLowerCase()
-    .replace(
-      /\bmicro\s*:\s*bit\b/g,
-      "microbit",
-    )
-    .replace(
-      /\bmicro\s+bit\b/g,
-      "microbit",
-    )
-    .replace(
-      /\b(mcirobit|micorbit|mirco?bit)\b/g,
-      "microbit",
-    )
-    .replace(
-      /\bsteop\b/g,
-      "step",
-    )
-    .replace(
-      /\bllesson\b/g,
-      "lesson",
-    )
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function extractStepNumbers(
-  text: string,
-): number[] {
-  const normalized =
-    normalizeQuestion(text);
-
-  const matches =
-    normalized.matchAll(
-      /\bstep\s*#?\s*(\d{1,2})\b/g,
-    );
-
-  const numbers =
-    new Set<number>();
-
-  for (const match of matches) {
-    const number =
-      Number(match[1]);
-
-    if (
-      Number.isInteger(number) &&
-      number >= 1
-    ) {
-      numbers.add(number);
-    }
-  }
-
-  return Array.from(numbers);
-}
-
-function extractStepNumber(
-  text: string,
-): number | null {
-  const numbers =
-    extractStepNumbers(text);
-
-  return numbers[0] ?? null;
-}
-
-function extractLessonNumber(
-  text: string,
-): number | null {
-  const normalized =
-    normalizeQuestion(text);
-
-  const match =
-    normalized.match(
-      /\blesson\s*#?\s*(\d{1,2})\b/,
-    );
-
-  if (!match) {
-    return null;
-  }
-
-  const lessonNumber =
-    Number(match[1]);
-
-  return (
-    Number.isInteger(
-      lessonNumber,
-    ) &&
-    lessonNumber >= 1
-  )
-    ? lessonNumber
-    : null;
-}
-
-function detectTopicInText(
-  text: string,
-): ConversationTopic {
-  const normalized =
-    normalizeQuestion(text);
-
+function normalizeFileType(
+  value: unknown,
+): SearchResult["file_type"] {
   if (
-    /\b(download|install|installation|home screen|apps screen|qr code)\b/.test(
-      normalized,
-    )
+    value === "docx" ||
+    value === "pdf" ||
+    value === "pptx" ||
+    value === "image" ||
+    value === "markdown"
   ) {
-    return "download-instructions";
+    return value;
   }
 
-  if (
-    /\b(pair|pairing|choose your microbit name)\b/.test(
-      normalized,
-    )
-  ) {
-    return "pairing";
-  }
-
-  const containsBuildPart =
-    /\b(led|leds|breadboard|alligator|gnd|motor|battery pack|plug\/socket|socket\/socket)\b/.test(
-      normalized,
-    );
-
-  const mentionsBuild =
-    /\b(build|building|assemble|assembly|circuit|breadboard|wiring|step)\b/.test(
-      normalized,
-    );
-
-  if (
-    containsBuildPart ||
-    (
-      normalized.includes(
-        "microbit",
-      ) &&
-      mentionsBuild
-    )
-  ) {
-    return "microbit-build";
-  }
-
-  if (
-    /\b(lesson|curriculum|tech circle|classroom activity)\b/.test(
-      normalized,
-    )
-  ) {
-    return "lesson";
-  }
-
-  return null;
-}
-
-function detectHistoryTopic(
-  history: ChatHistoryMessage[],
-): ConversationTopic {
-  for (
-    let index =
-      history.length - 1;
-    index >= 0;
-    index -= 1
-  ) {
-    const topic =
-      detectTopicInText(
-        history[index].content,
-      );
-
-    if (topic) {
-      return topic;
-    }
-  }
-
-  return null;
-}
-
-function findLastReferencedStep(
-  history: ChatHistoryMessage[],
-): number | null {
-  /*
-   * Prefer the most recent user message.
-   */
-  for (
-    let index =
-      history.length - 1;
-    index >= 0;
-    index -= 1
-  ) {
-    const message =
-      history[index];
-
-    if (
-      message.role !== "user"
-    ) {
-      continue;
-    }
-
-    const numbers =
-      extractStepNumbers(
-        message.content,
-      );
-
-    if (numbers.length === 1) {
-      return numbers[0];
-    }
-  }
-
-  /*
-   * Use an assistant answer only when it references
-   * exactly one numbered step.
-   */
-  for (
-    let index =
-      history.length - 1;
-    index >= 0;
-    index -= 1
-  ) {
-    const message =
-      history[index];
-
-    if (
-      message.role !==
-      "assistant"
-    ) {
-      continue;
-    }
-
-    const numbers =
-      extractStepNumbers(
-        message.content,
-      );
-
-    if (numbers.length === 1) {
-      return numbers[0];
-    }
-  }
-
-  return null;
-}
-
-function resolveRequestedStep(
-  question: string,
-  history: ChatHistoryMessage[],
-): number | null {
-  const explicitStep =
-    extractStepNumber(
-      question,
-    );
-
-  if (explicitStep !== null) {
-    return explicitStep;
-  }
-
-  const normalized =
-    normalizeQuestion(question);
-
-  const previousStep =
-    findLastReferencedStep(
-      history,
-    );
-
-  if (previousStep === null) {
-    return null;
-  }
-
-  if (
-    /\b(next|following)\b/.test(
-      normalized,
-    )
-  ) {
-    return previousStep + 1;
-  }
-
-  if (
-    /\b(previous|prior|before that)\b/.test(
-      normalized,
-    )
-  ) {
-    return Math.max(
-      1,
-      previousStep - 1,
-    );
-  }
-
-  if (
-    /\b(this|that|same)\b/.test(
-      normalized,
-    ) &&
-    /\b(image|picture|photo|step)\b/.test(
-      normalized,
-    )
-  ) {
-    return previousStep;
-  }
-
-  return null;
-}
-
-function isStepFollowUp(
-  question: string,
-): boolean {
-  const normalized =
-    normalizeQuestion(question);
-
-  return (
-    extractStepNumber(
-      normalized,
-    ) !== null ||
-    /\b(next|following|previous|prior)\b/.test(
-      normalized,
-    ) ||
-    /\b(this|that|same)\s+(step|image|picture)\b/.test(
-      normalized,
-    )
-  );
-}
-
-function isGuideClarificationResponse(
-  question: string,
-  history: ChatHistoryMessage[],
-): boolean {
-  const selectedTopic =
-    detectTopicInText(question);
-
-  const previousMessage =
-    history.at(-1);
-
-  return (
-    (
-      selectedTopic ===
-        "microbit-build" ||
-      selectedTopic ===
-        "download-instructions"
-    ) &&
-    previousMessage?.role ===
-      "assistant" &&
-    normalizeQuestion(
-      previousMessage.content,
-    ).includes(
-      "which guide do you mean",
-    )
-  );
+  return "docx";
 }
 
 function normalizeSearchResult(
@@ -557,7 +238,9 @@ function normalizeSearchResult(
       result.source_file ?? "",
 
     file_type:
-      result.file_type ?? "docx",
+      normalizeFileType(
+        result.file_type,
+      ),
 
     section:
       result.section ?? "",
@@ -594,111 +277,260 @@ function normalizeSearchResult(
   };
 }
 
+function extractLessonNumberFromText(
+  text: string,
+): number | null {
+  const match =
+    text.match(
+      /\blesson\s*#?\s*(\d{1,3})\b/i,
+    );
+
+  if (!match) {
+    return null;
+  }
+
+  const number =
+    Number(match[1]);
+
+  return (
+    Number.isInteger(number) &&
+    number >= 1
+  )
+    ? number
+    : null;
+}
+
+function findLastReferencedStep(
+  history: ChatHistoryMessage[],
+): number | null {
+  for (
+    let index =
+      history.length - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    const number =
+      extractStepNumber(
+        history[index].content,
+      );
+
+    if (number !== null) {
+      return number;
+    }
+  }
+
+  return null;
+}
+
+function inferTopicFromHistory(
+  history: ChatHistoryMessage[],
+): GuideTopic {
+  for (
+    let index =
+      history.length - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    const text =
+      history[index].content
+        .toLowerCase();
+
+    if (
+      text.includes(
+        "micro:bit building guide",
+      ) ||
+      text.includes(
+        "microbit building guide",
+      ) ||
+      /\b(breadboard|alligator clip|gnd|socket\/socket|plug\/plug|motor wire)\b/.test(
+        text,
+      )
+    ) {
+      return "microbit-build";
+    }
+
+    if (
+      text.includes(
+        "download instructions",
+      ) ||
+      /\b(home screen|apps screen|install the app)\b/.test(
+        text,
+      )
+    ) {
+      return "download-instructions";
+    }
+
+    if (
+      /\b(pair|pairing)\b/.test(
+        text,
+      ) &&
+      /\bmicro\s*:?\s*bit\b/.test(
+        text,
+      )
+    ) {
+      return "pairing";
+    }
+
+    if (
+      /\blesson\s*\d+\b/.test(
+        text,
+      ) ||
+      text.includes(
+        "curriculum lesson",
+      )
+    ) {
+      return "lesson";
+    }
+  }
+
+  return null;
+}
+
+function resolveGuideTopic(
+  intent: ParsedIntent,
+  history: ChatHistoryMessage[],
+): GuideTopic {
+  if (
+    intent.topic ===
+      "microbit-build" ||
+    intent.topic ===
+      "download-instructions" ||
+    intent.topic ===
+      "pairing" ||
+    intent.topic ===
+      "lesson"
+  ) {
+    return intent.topic;
+  }
+
+  return inferTopicFromHistory(
+    history,
+  );
+}
+
+function readNumberFromImageSubject(
+  value: string | null,
+): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const match =
+    value.match(
+      /\b(?:step|image|picture|photo)?\s*#?\s*(\d{1,3})\b/i,
+    );
+
+  if (!match) {
+    return null;
+  }
+
+  const number =
+    Number(match[1]);
+
+  return (
+    Number.isInteger(number) &&
+    number >= 1
+  )
+    ? number
+    : null;
+}
+
+function resolveRequestedStep(
+  intent: ParsedIntent,
+  history: ChatHistoryMessage[],
+): number | null {
+  if (
+    intent.stepNumber !== null
+  ) {
+    return intent.stepNumber;
+  }
+
+  const imageNumber =
+    readNumberFromImageSubject(
+      intent.imageSubject,
+    );
+
+  if (imageNumber !== null) {
+    return imageNumber;
+  }
+
+  const previousStep =
+    findLastReferencedStep(
+      history,
+    );
+
+  if (previousStep === null) {
+    return null;
+  }
+
+  if (
+    intent.action ===
+    "next-step"
+  ) {
+    return previousStep + 1;
+  }
+
+  if (
+    intent.action ===
+    "previous-step"
+  ) {
+    return Math.max(
+      1,
+      previousStep - 1,
+    );
+  }
+
+  return null;
+}
+
 function sortAndDeduplicateSteps(
   results: SearchResult[],
 ): SearchResult[] {
   const sorted =
-    [...results].sort(
-      (first, second) => {
-        const firstStep =
+    [...results]
+      .map((result) => ({
+        result,
+        number:
           extractStepNumber(
             [
-              first.title,
-              first.section,
+              result.title,
+              result.section,
             ].join(" "),
-          ) ??
-          Number.MAX_SAFE_INTEGER;
-
-        const secondStep =
-          extractStepNumber(
-            [
-              second.title,
-              second.section,
-            ].join(" "),
-          ) ??
-          Number.MAX_SAFE_INTEGER;
-
-        return firstStep -
-          secondStep;
-      },
-    );
-
-  const unique =
-    new Map<
-      number,
-      SearchResult
-    >();
-
-  for (const result of sorted) {
-    const stepNumber =
-      extractStepNumber(
-        [
-          result.title,
-          result.section,
-          result.content,
-        ].join(" "),
+          ),
+      }))
+      .filter(
+        (
+          item,
+        ): item is {
+          result: SearchResult;
+          number: number;
+        } =>
+          item.number !== null,
+      )
+      .sort(
+        (first, second) =>
+          first.number -
+          second.number,
       );
 
+  const seen =
+    new Set<number>();
+
+  const unique:
+    SearchResult[] = [];
+
+  for (const item of sorted) {
     if (
-      stepNumber === null ||
-      unique.has(stepNumber)
+      seen.has(item.number)
     ) {
       continue;
     }
 
-    unique.set(
-      stepNumber,
-      result,
-    );
+    seen.add(item.number);
+    unique.push(item.result);
   }
 
-  return Array.from(
-    unique.values(),
-  );
-}
-
-async function searchBuildSteps(): Promise<
-  SearchResult[]
-> {
-  const {
-    data,
-    error,
-  } = await supabaseAdmin
-    .from("documents")
-    .select(DOCUMENT_COLUMNS)
-    .ilike(
-      "source_file",
-      BUILD_SOURCE_PATTERN,
-    )
-    .ilike(
-      "title",
-      "Step %",
-    )
-    .order(
-      "page_number",
-      {
-        ascending: true,
-        nullsFirst: false,
-      },
-    );
-
-  if (error) {
-    throw new Error(
-      `Build-step search failed: ${error.message}`,
-    );
-  }
-
-  if (!Array.isArray(data)) {
-    return [];
-  }
-
-  return sortAndDeduplicateSteps(
-    data.map((item) =>
-      normalizeSearchResult(
-        item as Partial<SearchResult>,
-      ),
-    ),
-  );
+  return unique;
 }
 
 async function searchDownloadSteps(): Promise<
@@ -744,192 +576,152 @@ async function searchDownloadSteps(): Promise<
 async function searchLesson(
   lessonNumber: number,
 ): Promise<SearchResult[]> {
-  const {
-    data,
-    error,
-  } = await supabaseAdmin
-    .from("documents")
-    .select(DOCUMENT_COLUMNS)
-    .ilike(
-      "source_file",
-      "%Lessons_01-36_REVISED.docx%",
-    )
-    .ilike(
-      "title",
-      `Lesson ${lessonNumber}:%`,
-    )
-    .order(
-      "id",
-      {
-        ascending: true,
-      },
+  const responses =
+    await Promise.all(
+      LESSON_SOURCE_PATTERNS.map(
+        async (
+          sourcePattern,
+        ) => {
+          const {
+            data,
+            error,
+          } =
+            await supabaseAdmin
+              .from("documents")
+              .select(
+                DOCUMENT_COLUMNS,
+              )
+              .ilike(
+                "source_file",
+                sourcePattern,
+              )
+              .order(
+                "id",
+                {
+                  ascending:
+                    true,
+                },
+              );
+
+          if (error) {
+            throw new Error(
+              `Lesson search failed: ${error.message}`,
+            );
+          }
+
+          return Array.isArray(
+            data,
+          )
+            ? data
+            : [];
+        },
+      ),
     );
 
-  if (error) {
-    throw new Error(
-      `Lesson search failed: ${error.message}`,
-    );
-  }
+  const seen =
+    new Set<string>();
 
-  if (!Array.isArray(data)) {
-    return [];
-  }
+  const results:
+    SearchResult[] = [];
 
-  return data.map((item) =>
-    normalizeSearchResult(
-      item as Partial<SearchResult>,
-    ),
-  );
-}
-
-function isFullBuildGuideRequest(
-  question: string,
-  topic: ConversationTopic,
-): boolean {
-  const normalized =
-    normalizeQuestion(question);
-
-  if (
-    extractStepNumber(
-      normalized,
-    ) !== null
+  for (
+    const item
+    of responses.flat()
   ) {
-    return false;
-  }
-
-  if (
-    topic !==
-    "microbit-build"
-  ) {
-    return false;
-  }
-
-  return (
-    /\bstep[\s-]*by[\s-]*step\b/.test(
-      normalized,
-    ) ||
-    /\ball steps\b/.test(
-      normalized,
-    ) ||
-    /\bevery step\b/.test(
-      normalized,
-    ) ||
-    /\ball of them\b/.test(
-      normalized,
-    ) ||
-    /\bhow\b.*\bbuild\b/.test(
-      normalized,
-    ) ||
-    /\bbuilding\b.*\bmicrobit\b/.test(
-      normalized,
-    )
-  );
-}
-
-function asksForImageSequence(
-  question: string,
-): boolean {
-  const normalized =
-    normalizeQuestion(question);
-
-  const asksForImages =
-    /\b(image|images|picture|pictures|photo|photos|visual|visuals)\b/.test(
-      normalized,
-    );
-
-  const asksForRange =
-    /\bto (the )?end\b/.test(
-      normalized,
-    ) ||
-    /\ball steps\b/.test(
-      normalized,
-    ) ||
-    /\bevery step\b/.test(
-      normalized,
-    ) ||
-    /\bstep[\s-]*by[\s-]*step\b/.test(
-      normalized,
-    ) ||
-    /\bfrom (the )?(start|beginning)\b/.test(
-      normalized,
-    );
-
-  return (
-    asksForImages &&
-    asksForRange
-  );
-}
-
-function requestedImageStartStep(
-  question: string,
-): number {
-  const normalized =
-    normalizeQuestion(question);
-
-  const match =
-    normalized.match(
-      /\bfrom\s+step\s*(\d{1,2})\b/,
-    );
-
-  if (match) {
-    return Number(
-      match[1],
-    );
-  }
-
-  return 1;
-}
-
-function isImageRequest(
-  question: string,
-): boolean {
-  const normalized =
-    normalizeQuestion(question);
-
-  return (
-    /\b(image+|images|picture|pictures|photo|photos|preview|visual|visuals)\b/.test(
-      normalized,
-    ) ||
-    /\blook like\b/.test(
-      normalized,
-    ) ||
-    /\bshow me\b/.test(
-      normalized,
-    ) ||
-    /\blet me see\b/.test(
-      normalized,
-    ) ||
-    /\bwant to see\b/.test(
-      normalized,
-    )
-  );
-}
-
-function isBareImageNumberRequest(
-  question: string,
-): boolean {
-  const compactQuestion =
-    question
-      .toLowerCase()
-      .replace(
-        /[^a-z0-9]/g,
-        "",
+    const result =
+      normalizeSearchResult(
+        item as Partial<SearchResult>,
       );
 
-  return /^(image+|img|picture|photo)\d{1,3}$/.test(
-    compactQuestion,
-  );
+    const exactLessonNumber =
+      extractLessonNumberFromText(
+        [
+          result.title,
+          result.section,
+        ].join(" "),
+      );
+
+    if (
+      exactLessonNumber !==
+      lessonNumber
+    ) {
+      continue;
+    }
+
+    const key =
+      result.chunk_id ||
+      [
+        result.source_file,
+        result.page_number,
+        result.slide_number,
+        result.title,
+      ].join("|");
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    results.push(result);
+  }
+
+  return results;
 }
 
-function ambiguousImageNumberAnswer(): string {
-  return "I can’t identify an approved image from an image number alone. Please name the guide, lesson, or build step you mean.";
+function buildRetrievalQuestion(
+  intent: ParsedIntent,
+): string {
+  const topicDescriptions:
+    Record<IntentTopic, string> = {
+      "microbit-build":
+        "micro:bit physical build, wiring, connectors, breadboard, motor, LEDs, and battery",
+      "download-instructions":
+        "Blocks and Bots app download and installation instructions",
+      pairing:
+        "pairing a micro:bit with the Blocks and Bots app",
+      lesson:
+        "Blocks and Bots curriculum lesson",
+      virtues:
+        "collaboration virtues and the virtues palette",
+      scratchjr:
+        "ScratchJr programming and classroom activities",
+      general:
+        "Blocks and Bots curriculum",
+      unknown:
+        "Blocks and Bots curriculum",
+    };
+
+  const parts = [
+    intent.normalizedQuestion,
+    `Topic: ${topicDescriptions[intent.topic]}`,
+  ];
+
+  if (
+    intent.components.length > 0
+  ) {
+    parts.push(
+      `Components: ${intent.components.join(
+        ", ",
+      )}`,
+    );
+  }
+
+  return parts.join("\n");
 }
 
 function chooseTextContextResults(
   results: SearchResult[],
+  action: ParsedIntent["action"],
 ): SearchResult[] {
   if (results.length === 0) {
     return [];
+  }
+
+  if (
+    action ===
+    "troubleshoot"
+  ) {
+    return results.slice(0, 6);
   }
 
   const highestSimilarity =
@@ -965,11 +757,25 @@ function getSearchableText(
 
 function chooseImageResults(
   results: SearchResult[],
-  question: string,
+  intent: ParsedIntent,
   limit = 2,
 ): SearchResult[] {
-  const normalized =
-    normalizeQuestion(question);
+  const queryTerms = [
+    intent.normalizedQuestion,
+    intent.imageSubject ?? "",
+    ...intent.components,
+  ]
+    .join(" ")
+    .toLowerCase()
+    .replace(
+      /[^\p{L}\p{N}]+/gu,
+      " ",
+    )
+    .split(/\s+/)
+    .filter(
+      (term) =>
+        term.length >= 3,
+    );
 
   return [...results]
     .filter(
@@ -992,22 +798,20 @@ function chooseImageResults(
           second.similarity;
 
         for (
-          const keyword
-          of normalized.split(/\s+/)
+          const term
+          of queryTerms
         ) {
           if (
-            keyword.length >= 4 &&
             firstText.includes(
-              keyword,
+              term,
             )
           ) {
             firstScore += 0.04;
           }
 
           if (
-            keyword.length >= 4 &&
             secondText.includes(
-              keyword,
+              term,
             )
           ) {
             secondScore += 0.04;
@@ -1035,35 +839,6 @@ function chooseImageResults(
       },
     )
     .slice(0, limit);
-}
-
-function enrichQuestionWithTopic(
-  question: string,
-  topic: ConversationTopic,
-): string {
-  if (
-    topic ===
-    "microbit-build"
-  ) {
-    return `${question}\nConversation topic: micro:bit building guide.`;
-  }
-
-  if (
-    topic ===
-    "download-instructions"
-  ) {
-    return `${question}\nConversation topic: Blocks and Bots download instructions.`;
-  }
-
-  if (topic === "pairing") {
-    return `${question}\nConversation topic: pairing the micro:bit with the Blocks and Bots app.`;
-  }
-
-  if (topic === "lesson") {
-    return `${question}\nConversation topic: Blocks and Bots curriculum lesson.`;
-  }
-
-  return question;
 }
 
 function buildContext(
@@ -1170,97 +945,86 @@ function buildImages(
       continue;
     }
 
-    const imagePath =
-      result.image_paths[0];
-
-    if (
-      !imagePath ||
-      seenPaths.has(imagePath)
+    for (
+      const imagePath
+      of result.image_paths
     ) {
-      continue;
-    }
-
-    seenPaths.add(imagePath);
-
-    const sourceFile =
-      path.basename(
-        result.source_file,
-      );
-
-    const location =
-      result.page_number !== null
-        ? `page ${result.page_number}`
-        : result.slide_number !== null
-          ? `slide ${result.slide_number}`
-          : "document";
-
-    images.push({
-      url:
-        `/api/source-image?path=${encodeURIComponent(
+      if (
+        !imagePath ||
+        seenPaths.has(
           imagePath,
-        )}`,
+        )
+      ) {
+        continue;
+      }
 
-      path:
-        imagePath,
+      seenPaths.add(imagePath);
 
-      caption:
-        `${result.title} — ${sourceFile}, ${location}`,
+      const sourceFile =
+        path.basename(
+          result.source_file,
+        );
 
-      sourceFile,
+      const location =
+        result.page_number !== null
+          ? `page ${result.page_number}`
+          : result.slide_number !== null
+            ? `slide ${result.slide_number}`
+            : "document";
 
-      page:
-        result.page_number,
+      images.push({
+        url:
+          `/api/source-image?path=${encodeURIComponent(
+            imagePath,
+          )}`,
 
-      slide:
-        result.slide_number,
-    });
+        path:
+          imagePath,
 
-    if (
-      images.length >=
-      maxImages
-    ) {
-      break;
+        caption:
+          `${result.title} — ${sourceFile}, ${location}`,
+
+        sourceFile,
+
+        page:
+          result.page_number,
+
+        slide:
+          result.slide_number,
+      });
+
+      if (
+        images.length >=
+        maxImages
+      ) {
+        return images;
+      }
     }
   }
 
   return images;
 }
 
-function clarificationAnswer(): string {
-  return "Which guide do you mean: the micro:bit building guide or the Blocks and Bots download instructions?";
+function clarificationResponse(
+  answer: string,
+) {
+  return Response.json({
+    answer,
+    reply: answer,
+    grounded: false,
+    sources: [],
+    images: [],
+    generation:
+      routerGeneration(),
+  });
 }
 
 function insufficientAnswer(): string {
   return "I could not find enough verified information in the approved materials to answer that question.";
 }
 
-function createConnectorTroubleshootingResult(
-  similarity: number,
-): SearchResult {
-  return {
-    id: -1,
-    chunk_id:
-      "approved-connector-troubleshooting",
-    title:
-      "Approved Connector Troubleshooting",
-    content:
-      CONNECTOR_TROUBLESHOOTING_CONTENT,
-    source_file:
-      "knowledge/approved/connector-troubleshooting.md",
-    file_type: "markdown",
-    section:
-      "Connector mismatch",
-    page_number: null,
-    slide_number: null,
-    image_paths: [],
-    should_display_image: false,
-    metadata: {
-      approved: true,
-      category:
-        "troubleshooting",
-    },
-    similarity,
-  };
+function guideClarification(): string {
+  return "Which guide do you mean: the micro:bit building guide or the Blocks and Bots download instructions?";
 }
 
 export async function POST(
@@ -1291,82 +1055,63 @@ export async function POST(
       );
     }
 
-    /*
-     * Image numbers are not globally unique across the
-     * approved documents. Do not run semantic retrieval
-     * for a bare request such as "image 1?" because it can
-     * return an unrelated high-similarity image.
-     */
-    if (
-      isBareImageNumberRequest(
+    const intent =
+      await parseUserIntent({
         question,
-      )
-    ) {
-      const answer =
-        ambiguousImageNumberAnswer();
-
-      return Response.json({
-        answer,
-        reply: answer,
-        grounded: false,
-        sources: [],
-        images: [],
-        generation:
-          routerGeneration(),
+        history,
       });
+
+    if (
+      intent.needsClarification ||
+      intent.action ===
+        "clarify"
+    ) {
+      return clarificationResponse(
+        intent.clarificationQuestion ??
+        "Could you clarify which guide, lesson, step, or image you mean?",
+      );
     }
 
-    const currentTopic =
-      detectTopicInText(
-        question,
-      );
-
-    const historyTopic =
-      detectHistoryTopic(
+    const resolvedTopic =
+      resolveGuideTopic(
+        intent,
         history,
       );
-
-    const resolvedTopic =
-      currentTopic ??
-      historyTopic;
 
     const requestedStep =
       resolveRequestedStep(
-        question,
+        intent,
         history,
-      ) ??
-      (
-        isGuideClarificationResponse(
-          question,
-          history,
-        )
-          ? findLastReferencedStep(
-              history,
-            )
-          : null
-      );
-
-    const requestedLesson =
-      extractLessonNumber(
-        question,
       );
 
     /*
-     * Numbered lessons must use an exact title lookup.
-     * Semantic retrieval can otherwise mix Lesson 1 with
-     * Lessons 12, 19, 21, and other nearby numbers.
+     * Exact curriculum lesson.
      */
-    if (requestedLesson !== null) {
+    if (
+      intent.action ===
+        "exact-lesson" ||
+      intent.lessonNumber !==
+        null
+    ) {
+      const lessonNumber =
+        intent.lessonNumber;
+
+      if (lessonNumber === null) {
+        return clarificationResponse(
+          "Which lesson number do you mean?",
+        );
+      }
+
       const lessonResults =
         await searchLesson(
-          requestedLesson,
+          lessonNumber,
         );
 
       if (
         lessonResults.length === 0
       ) {
         const answer =
-          `I could not find Lesson ${requestedLesson} in the approved curriculum materials.`;
+          `I could not find Lesson ${lessonNumber} in the approved curriculum materials.`;
 
         return Response.json({
           answer,
@@ -1381,11 +1126,14 @@ export async function POST(
 
       const answer =
         await generateGroundedAnswer({
-          question,
+          question:
+            intent.normalizedQuestion,
+
           context:
             buildContext(
               lessonResults,
             ),
+
           history,
         });
 
@@ -1393,32 +1141,32 @@ export async function POST(
         answer,
         reply: answer,
         grounded: true,
+
         sources:
           buildSources(
             lessonResults,
           ),
+
         images:
-          isImageRequest(
-            question,
-          )
+          intent.wantsImage
             ? buildImages(
                 lessonResults,
                 2,
               )
             : [],
+
         generation:
           geminiGeneration(),
       });
     }
 
     /*
-     * A request for multiple step images must run
-     * before the single exact-step handler.
+     * All step images, optionally beginning at a
+     * specific step and continuing through the end.
      */
     if (
-      asksForImageSequence(
-        question,
-      )
+      intent.action ===
+      "show-image-sequence"
     ) {
       if (
         resolvedTopic !==
@@ -1426,18 +1174,9 @@ export async function POST(
         resolvedTopic !==
           "download-instructions"
       ) {
-        const answer =
-          clarificationAnswer();
-
-        return Response.json({
-          answer,
-          reply: answer,
-          grounded: false,
-          sources: [],
-          images: [],
-          generation:
-            routerGeneration(),
-        });
+        return clarificationResponse(
+          guideClarification(),
+        );
       }
 
       const procedureSteps =
@@ -1447,9 +1186,7 @@ export async function POST(
           : await searchDownloadSteps();
 
       const startStep =
-        requestedImageStartStep(
-          question,
-        );
+        requestedStep ?? 1;
 
       const selectedSteps =
         procedureSteps.filter(
@@ -1473,7 +1210,10 @@ export async function POST(
       const images =
         buildImages(
           selectedSteps,
-          selectedSteps.length,
+          Math.max(
+            selectedSteps.length,
+            1,
+          ),
         );
 
       if (images.length === 0) {
@@ -1493,14 +1233,15 @@ export async function POST(
 
       const firstNumber =
         extractStepNumber(
-          selectedSteps[0].title,
+          selectedSteps[0]?.title ??
+          "",
         );
 
       const lastNumber =
         extractStepNumber(
           selectedSteps[
             selectedSteps.length - 1
-          ].title,
+          ]?.title ?? "",
         );
 
       const answer =
@@ -1524,29 +1265,60 @@ export async function POST(
     }
 
     /*
-     * Exact step or conversational follow-up:
-     *
-     * User: microbit Step 1
-     * User: Step 2?
-     * User: show me the next one
+     * One exact step, a next/previous follow-up, or
+     * a request for one numbered step image.
      */
     if (
-      requestedStep !== null &&
+      intent.action ===
+        "exact-step" ||
+      intent.action ===
+        "next-step" ||
+      intent.action ===
+        "previous-step" ||
       (
-        isStepFollowUp(
-          question,
-        ) ||
-        resolvedTopic ===
-          "microbit-build" ||
-        resolvedTopic ===
-          "download-instructions"
-        )
+        intent.action ===
+          "show-image" &&
+        requestedStep !== null
+      )
     ) {
+      if (requestedStep === null) {
+        return clarificationResponse(
+          "Which step number do you mean?",
+        );
+      }
+
       if (
-        resolvedTopic === null
+        resolvedTopic !==
+          "microbit-build" &&
+        resolvedTopic !==
+          "download-instructions"
       ) {
+        return clarificationResponse(
+          guideClarification(),
+        );
+      }
+
+      const procedureSteps =
+        resolvedTopic ===
+        "microbit-build"
+          ? await searchBuildSteps()
+          : await searchDownloadSteps();
+
+      const exactStep =
+        procedureSteps.find(
+          (step) =>
+            extractStepNumber(
+              [
+                step.title,
+                step.section,
+              ].join(" "),
+            ) ===
+            requestedStep,
+        );
+
+      if (!exactStep) {
         const answer =
-          clarificationAnswer();
+          `I could not find Step ${requestedStep} in the approved guide.`;
 
         return Response.json({
           answer,
@@ -1555,74 +1327,44 @@ export async function POST(
           sources: [],
           images: [],
           generation:
-            routerGeneration(),
+            approvedGeneration(),
         });
       }
 
+      /*
+       * A pure image request does not need a second
+       * Gemini call. Return the approved image directly.
+       */
       if (
-        resolvedTopic ===
-          "microbit-build" ||
-        resolvedTopic ===
-          "download-instructions"
+        intent.action ===
+        "show-image"
       ) {
-        const procedureSteps =
-          resolvedTopic ===
-          "microbit-build"
-            ? await searchBuildSteps()
-            : await searchDownloadSteps();
-
-        const exactStep =
-          procedureSteps.find(
-            (step) =>
-              extractStepNumber(
-                [
-                  step.title,
-                  step.section,
-                ].join(" "),
-              ) ===
-              requestedStep,
+        const images =
+          buildImages(
+            [exactStep],
+            1,
           );
 
-        if (!exactStep) {
+        if (images.length === 0) {
           const answer =
-            `I could not find Step ${requestedStep} in the approved guide.`;
+            `I found ${exactStep.title}, but no approved image was available for it.`;
 
           return Response.json({
             answer,
             reply: answer,
             grounded: false,
-            sources: [],
+            sources:
+              buildSources([
+                exactStep,
+              ]),
             images: [],
             generation:
               approvedGeneration(),
           });
         }
 
-        const guideName =
-          resolvedTopic ===
-          "microbit-build"
-            ? "micro:bit building guide"
-            : "Blocks and Bots download instructions";
-
         const answer =
-          await generateGroundedStepAnswer({
-            question,
-            guideName,
-
-            title:
-              exactStep.title,
-
-            context:
-              buildContext([
-                exactStep,
-              ]),
-
-            imagePath:
-              exactStep.image_paths[0] ??
-              null,
-
-            history,
-          });
+          `Here is the approved image for ${exactStep.title}.`;
 
         return Response.json({
           answer,
@@ -1634,32 +1376,95 @@ export async function POST(
               exactStep,
             ]),
 
-          images:
-            buildImages(
-              [exactStep],
-              1,
-            ),
+          images,
 
           generation:
-            geminiGeneration(),
+            approvedGeneration(),
         });
       }
+
+      const guideName =
+        resolvedTopic ===
+        "microbit-build"
+          ? "micro:bit building guide"
+          : "Blocks and Bots download instructions";
+
+      const answer =
+        await generateGroundedStepAnswer({
+          question:
+            intent.normalizedQuestion,
+
+          guideName,
+
+          title:
+            exactStep.title,
+
+          context:
+            buildContext([
+              exactStep,
+            ]),
+
+          /*
+           * Gemini may use the approved image to
+           * understand the step, but the frontend only
+           * displays it when the user requested an image.
+           */
+          imagePath:
+            exactStep.image_paths[0] ??
+            null,
+
+          history,
+        });
+
+      return Response.json({
+        answer,
+        reply: answer,
+        grounded: true,
+
+        sources:
+          buildSources([
+            exactStep,
+          ]),
+
+        images:
+          intent.wantsImage
+            ? buildImages(
+                [exactStep],
+                1,
+              )
+            : [],
+
+        generation:
+          geminiGeneration(),
+      });
     }
 
     /*
-     * Entire micro:bit build guide.
+     * Complete guide.
      */
     if (
-      isFullBuildGuideRequest(
-        question,
-        resolvedTopic,
-      )
+      intent.action ===
+      "full-guide"
     ) {
-      const buildSteps =
-        await searchBuildSteps();
+      if (
+        resolvedTopic !==
+          "microbit-build" &&
+        resolvedTopic !==
+          "download-instructions"
+      ) {
+        return clarificationResponse(
+          guideClarification(),
+        );
+      }
+
+      const guideSteps =
+        resolvedTopic ===
+        "microbit-build"
+          ? await searchBuildSteps()
+          : await searchDownloadSteps();
 
       if (
-        buildSteps.length === 0
+        guideSteps.length === 0
       ) {
         const answer =
           insufficientAnswer();
@@ -1676,26 +1481,40 @@ export async function POST(
       }
 
       const answer =
-        await generateGroundedBuildGuide({
-          question,
+        resolvedTopic ===
+        "microbit-build"
+          ? await generateGroundedBuildGuide({
+              question:
+                intent.normalizedQuestion,
 
-          steps:
-            buildSteps.map(
-              (step) => ({
-                title:
-                  step.title,
+              steps:
+                guideSteps.map(
+                  (step) => ({
+                    title:
+                      step.title,
 
-                content:
-                  step.content,
+                    content:
+                      step.content,
 
-                imagePath:
-                  step.image_paths[0] ??
-                  null,
-              }),
-            ),
+                    imagePath:
+                      step.image_paths[0] ??
+                      null,
+                  }),
+                ),
 
-          history,
-        });
+              history,
+            })
+          : await generateGroundedAnswer({
+              question:
+                intent.normalizedQuestion,
+
+              context:
+                buildContext(
+                  guideSteps,
+                ),
+
+              history,
+            });
 
       return Response.json({
         answer,
@@ -1704,14 +1523,16 @@ export async function POST(
 
         sources:
           buildSources(
-            buildSteps,
+            guideSteps,
           ),
 
         images:
-          buildImages(
-            buildSteps,
-            buildSteps.length,
-          ),
+          intent.wantsImage
+            ? buildImages(
+                guideSteps,
+                guideSteps.length,
+              )
+            : [],
 
         generation:
           geminiGeneration(),
@@ -1719,59 +1540,46 @@ export async function POST(
     }
 
     /*
-     * General semantic search enriched by the
-     * conversation's current topic.
+     * General grounded retrieval, including
+     * misspelled troubleshooting questions.
      */
     const retrievalQuestion =
-      enrichQuestionWithTopic(
-        question,
-        resolvedTopic,
-      );
-
-    const imageRequest =
-      isImageRequest(
-        question,
+      buildRetrievalQuestion(
+        intent,
       );
 
     const searchResults =
       await searchDocuments(
         retrievalQuestion,
         {
-          matchCount: 20,
+          matchCount:
+            intent.action ===
+            "troubleshoot"
+              ? 20
+              : 12,
 
           matchThreshold:
-            imageRequest
+            intent.wantsImage ||
+            intent.action ===
+              "troubleshoot"
               ? 0.2
               : 0.3,
         },
       );
 
-    const approvedTroubleshooting =
-      needsConnectorTroubleshooting(
-        question,
-      )
-        ? [
-            createConnectorTroubleshootingResult(
-              searchResults[0]
-                ?.similarity ?? 1,
-            ),
-          ]
-        : [];
-
-    const groundedSearchResults = [
-      ...approvedTroubleshooting,
-      ...searchResults,
-    ];
-
     /*
-     * Direct image requests return approved images
-     * without calling Gemini.
+     * A non-numbered image request uses semantic
+     * retrieval, but only returns approved images.
      */
-    if (imageRequest) {
+    if (
+      intent.action ===
+        "show-image" ||
+      intent.wantsImage
+    ) {
       const imageResults =
         chooseImageResults(
-          groundedSearchResults,
-          retrievalQuestion,
+          searchResults,
+          intent,
           2,
         );
 
@@ -1783,7 +1591,7 @@ export async function POST(
 
       if (images.length === 0) {
         const answer =
-          "I found related information, but no approved image was available to display.";
+          "I found related approved information, but no approved image was available to display.";
 
         return Response.json({
           answer,
@@ -1820,7 +1628,8 @@ export async function POST(
 
     const contextResults =
       chooseTextContextResults(
-        groundedSearchResults,
+        searchResults,
+        intent.action,
       );
 
     if (
@@ -1842,7 +1651,8 @@ export async function POST(
 
     const answer =
       await generateGroundedAnswer({
-        question,
+        question:
+          intent.normalizedQuestion,
 
         context:
           buildContext(
@@ -1862,11 +1672,11 @@ export async function POST(
           contextResults,
         ),
 
-      images:
-        buildImages(
-          contextResults,
-          2,
-        ),
+      /*
+       * Never display images for an ordinary text
+       * answer unless the user explicitly requested one.
+       */
+      images: [],
 
       generation:
         geminiGeneration(),
