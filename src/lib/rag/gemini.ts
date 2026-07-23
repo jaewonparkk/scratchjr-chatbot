@@ -4,12 +4,17 @@ import { GoogleGenAI } from "@google/genai";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-const GEMINI_MODEL =
+export const GEMINI_MODEL_NAME =
   process.env.GEMINI_MODEL ??
   "gemini-2.5-flash";
 
 const MAX_INLINE_IMAGE_BYTES =
   18 * 1024 * 1024;
+
+export type ChatHistoryMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
 
 type GeminiTextPart = {
   text: string;
@@ -26,16 +31,19 @@ type GeminiPart =
   | GeminiTextPart
   | GeminiImagePart;
 
-type GenerateGroundedAnswerInput = {
+type GroundedAnswerInput = {
   question: string;
   context: string;
+  history?: ChatHistoryMessage[];
 };
 
-type GenerateGroundedStepAnswerInput = {
+type GroundedStepAnswerInput = {
   question: string;
+  guideName: string;
   title: string;
   context: string;
   imagePath: string | null;
+  history?: ChatHistoryMessage[];
 };
 
 export type GeminiBuildStep = {
@@ -44,9 +52,10 @@ export type GeminiBuildStep = {
   imagePath: string | null;
 };
 
-type GenerateGroundedBuildGuideInput = {
+type GroundedBuildGuideInput = {
   question: string;
   steps: GeminiBuildStep[];
+  history?: ChatHistoryMessage[];
 };
 
 type LoadedImage = {
@@ -54,9 +63,8 @@ type LoadedImage = {
   byteLength: number;
 };
 
-let geminiClient:
-  | GoogleGenAI
-  | null = null;
+let geminiClient: GoogleGenAI | null =
+  null;
 
 function getGeminiClient(): GoogleGenAI {
   const apiKey =
@@ -78,13 +86,38 @@ function getGeminiClient(): GoogleGenAI {
   return geminiClient;
 }
 
+function formatHistory(
+  history: ChatHistoryMessage[] = [],
+): string {
+  if (history.length === 0) {
+    return "No earlier conversation.";
+  }
+
+  return history
+    .slice(-12)
+    .map((message) => {
+      const label =
+        message.role === "user"
+          ? "USER"
+          : "ASSISTANT";
+
+      return [
+        `${label}:`,
+        message.content
+          .trim()
+          .slice(0, 4000),
+      ].join("\n");
+    })
+    .join("\n\n");
+}
+
 function resolveApprovedImagePath(
   imagePath: string,
 ): string {
   const projectRoot =
     process.cwd();
 
-  const approvedImageDirectory =
+  const approvedDirectory =
     path.resolve(
       projectRoot,
       "knowledge",
@@ -92,7 +125,7 @@ function resolveApprovedImagePath(
       "images",
     );
 
-  const absoluteImagePath =
+  const absolutePath =
     path.resolve(
       projectRoot,
       imagePath,
@@ -100,8 +133,8 @@ function resolveApprovedImagePath(
 
   const relativePath =
     path.relative(
-      approvedImageDirectory,
-      absoluteImagePath,
+      approvedDirectory,
+      absolutePath,
     );
 
   if (
@@ -109,11 +142,11 @@ function resolveApprovedImagePath(
     path.isAbsolute(relativePath)
   ) {
     throw new Error(
-      "The requested image is outside the approved image directory.",
+      "The image is outside the approved image directory.",
     );
   }
 
-  return absoluteImagePath;
+  return absolutePath;
 }
 
 function getImageMimeType(
@@ -137,7 +170,7 @@ function getImageMimeType(
 
   if (!mimeType) {
     throw new Error(
-      `Unsupported image type: ${extension}`,
+      `Unsupported image extension: ${extension}`,
     );
   }
 
@@ -147,14 +180,14 @@ function getImageMimeType(
 async function loadImage(
   imagePath: string,
 ): Promise<LoadedImage> {
-  const absoluteImagePath =
+  const absolutePath =
     resolveApprovedImagePath(
       imagePath,
     );
 
   const imageBuffer =
     await readFile(
-      absoluteImagePath,
+      absolutePath,
     );
 
   return {
@@ -178,16 +211,26 @@ async function loadImage(
 
 async function callGemini(
   systemInstruction: string,
-  contents: GeminiPart[],
+  parts: GeminiPart[],
 ): Promise<string> {
   const client =
     getGeminiClient();
 
+  console.info(
+    `[Gemini] Calling model: ${GEMINI_MODEL_NAME}`,
+  );
+
   const response =
     await client.models.generateContent({
-      model: GEMINI_MODEL,
+      model:
+        GEMINI_MODEL_NAME,
 
-      contents,
+      contents: [
+        {
+          role: "user",
+          parts,
+        },
+      ],
 
       config: {
         systemInstruction,
@@ -205,31 +248,37 @@ async function callGemini(
     );
   }
 
+  console.info(
+    `[Gemini] Response received: ${answer.length} characters`,
+  );
+
   return answer;
 }
 
 export async function generateGroundedAnswer({
   question,
   context,
-}: GenerateGroundedAnswerInput): Promise<string> {
+  history = [],
+}: GroundedAnswerInput): Promise<string> {
   const systemInstruction = [
     "You are the Blocks and Bots Assistant.",
     "",
-    "Answer teachers, parents, facilitators, and learners using only the approved curriculum information supplied by the application.",
+    "Answer teachers, parents, facilitators, and learners using only approved curriculum information supplied by the application.",
     "",
     "Rules:",
     "1. Always answer in English.",
-    "2. Answer the user's exact question.",
-    "3. Do not summarize an entire lesson or document unless the user explicitly requests a summary or overview.",
-    "4. Ignore retrieved information that is unrelated to the question.",
-    "5. Give a direct but useful answer.",
-    "6. Normally use one or two focused paragraphs.",
-    "7. Use numbered steps only for procedures or when the user explicitly asks for step-by-step instructions.",
-    "8. Do not copy large portions of the source text.",
-    "9. Do not invent wiring connections, pin numbers, colors, parts, curriculum directions, safety claims, or troubleshooting instructions.",
-    "10. When the approved information is insufficient, clearly say so.",
-    "11. Do not mention prompts, context windows, retrieval, embeddings, databases, Ollama, Gemini, or other models.",
-    "12. Do not invent citations or source names.",
+    "2. Understand follow-up questions using the conversation history.",
+    "3. Answer the user's exact current question.",
+    "4. Do not summarize an entire lesson or document unless explicitly requested.",
+    "5. Ignore retrieved information unrelated to the question.",
+    "6. Give a direct but useful explanation.",
+    "7. Normally use one or two focused paragraphs.",
+    "8. Use numbered steps only for procedures.",
+    "9. Do not copy large portions of source material.",
+    "10. Never invent wiring connections, pins, colors, parts, safety claims, curriculum instructions, or troubleshooting.",
+    "11. If approved information is insufficient, clearly say so.",
+    "12. Do not mention prompts, context windows, retrieval, embeddings, databases, or AI models.",
+    "13. Do not invent sources.",
   ].join("\n");
 
   return callGemini(
@@ -237,16 +286,19 @@ export async function generateGroundedAnswer({
     [
       {
         text: [
+          "RECENT CONVERSATION",
+          "===================",
+          formatHistory(history),
+          "",
           "APPROVED CURRICULUM INFORMATION",
           "===============================",
           context,
           "",
-          "USER QUESTION",
-          "=============",
+          "CURRENT USER QUESTION",
+          "=====================",
           question,
           "",
-          "Answer the exact question using only the relevant approved information.",
-          "Give a useful explanation instead of copying or broadly summarizing the document.",
+          "Answer the current question using only the relevant approved information.",
         ].join("\n"),
       },
     ],
@@ -255,24 +307,29 @@ export async function generateGroundedAnswer({
 
 export async function generateGroundedStepAnswer({
   question,
+  guideName,
   title,
   context,
   imagePath,
-}: GenerateGroundedStepAnswerInput): Promise<string> {
-  const contents: GeminiPart[] = [
+  history = [],
+}: GroundedStepAnswerInput): Promise<string> {
+  const parts: GeminiPart[] = [
     {
       text: [
+        "RECENT CONVERSATION",
+        "===================",
+        formatHistory(history),
+        "",
+        `GUIDE: ${guideName}`,
         `EXACT STEP TITLE: ${title}`,
         "",
         "APPROVED STEP TEXT",
         "==================",
         context,
         "",
-        "USER QUESTION",
-        "=============",
+        "CURRENT USER QUESTION",
+        "=====================",
         question,
-        "",
-        "Explain this exact build step.",
       ].join("\n"),
     },
   ];
@@ -283,12 +340,12 @@ export async function generateGroundedStepAnswer({
         imagePath,
       );
 
-    contents.push({
+    parts.push({
       text:
         "The following approved image belongs to this exact step.",
     });
 
-    contents.push(
+    parts.push(
       loadedImage.part,
     );
   }
@@ -296,52 +353,57 @@ export async function generateGroundedStepAnswer({
   const systemInstruction = [
     "You are the Blocks and Bots Assistant.",
     "",
-    "Explain one exact approved micro:bit build step using its approved text and attached image.",
+    "Explain one exact approved procedure step using the approved text and attached image.",
     "",
     "Rules:",
     "1. Always answer in English.",
-    "2. Begin with the exact step title.",
-    "3. Explain the purpose of the step.",
-    "4. Explain what the learner should connect or do in three to six useful sentences.",
-    "5. Use the attached image to identify visible parts and connections.",
-    "6. Refer to the image when it helps the learner locate a connection.",
-    "7. Do not merely repeat the title, OCR text, image caption, or the phrase 'Image of Step'.",
-    "8. Do not explain unrelated steps or summarize the entire build.",
-    "9. Do not invent wire colors, pins, components, connections, or safety instructions.",
-    "10. If an important visual detail is unclear, say exactly what is unclear instead of guessing.",
-    "11. Do not claim that an image is missing when an image is attached.",
+    "2. Use conversation history to understand short follow-up questions such as 'Step 2?' or 'the next one'.",
+    "3. Begin with the exact step title.",
+    "4. Explain the purpose of the step.",
+    "5. Explain what the learner should do in three to six useful sentences.",
+    "6. Use visible information from the attached image when helpful.",
+    "7. Do not merely repeat the title, OCR text, or 'Image of Step'.",
+    "8. Do not explain unrelated steps.",
+    "9. Do not invent colors, pins, parts, connections, or safety instructions.",
+    "10. Preserve explicit safety guidance from the approved material.",
+    "11. If an important detail is unclear, state what is unclear instead of guessing.",
+    "12. Do not say an image is unavailable when one is attached.",
   ].join("\n");
 
   return callGemini(
     systemInstruction,
-    contents,
+    parts,
   );
 }
 
 export async function generateGroundedBuildGuide({
   question,
   steps,
-}: GenerateGroundedBuildGuideInput): Promise<string> {
+  history = [],
+}: GroundedBuildGuideInput): Promise<string> {
   if (steps.length === 0) {
     throw new Error(
       "No approved build steps were supplied.",
     );
   }
 
-  const contents: GeminiPart[] = [
+  const parts: GeminiPart[] = [
     {
       text: [
-        "USER QUESTION",
-        "=============",
+        "RECENT CONVERSATION",
+        "===================",
+        formatHistory(history),
+        "",
+        "CURRENT USER QUESTION",
+        "=====================",
         question,
         "",
-        "The approved build steps follow in numerical order.",
+        "The approved build steps and images follow in numerical order.",
       ].join("\n"),
     },
   ];
 
   let totalImageBytes = 0;
-  let attachedImageCount = 0;
 
   for (
     let index = 0;
@@ -351,11 +413,11 @@ export async function generateGroundedBuildGuide({
     const step =
       steps[index];
 
-    contents.push({
+    parts.push({
       text: [
         "",
-        `APPROVED BUILD STEP ${index + 1}`,
-        "========================",
+        `APPROVED STEP ${index + 1}`,
+        "====================",
         `Exact title: ${step.title}`,
         "",
         "Approved text:",
@@ -386,27 +448,15 @@ export async function generateGroundedBuildGuide({
     totalImageBytes =
       nextTotal;
 
-    attachedImageCount += 1;
-
-    contents.push({
+    parts.push({
       text:
-        `The following approved image belongs to ${step.title}.`,
+        `The following image belongs only to ${step.title}.`,
     });
 
-    contents.push(
+    parts.push(
       loadedImage.part,
     );
   }
-
-  contents.push({
-    text: [
-      "",
-      `Attached approved step images: ${attachedImageCount}`,
-      `Total approved steps: ${steps.length}`,
-      "",
-      "Explain every approved step in the supplied numerical order.",
-    ].join("\n"),
-  });
 
   const systemInstruction = [
     "You are the Blocks and Bots Assistant.",
@@ -415,23 +465,21 @@ export async function generateGroundedBuildGuide({
     "",
     "Rules:",
     "1. Always answer in English.",
-    "2. Include every approved build step exactly once.",
-    "3. Preserve the supplied numerical order.",
+    "2. Include every supplied step exactly once.",
+    "3. Preserve numerical order.",
     "4. Use each exact step title as a heading.",
     "5. Explain each step in two to four useful sentences.",
-    "6. Explain what the learner connects or does and why that action matters for the build.",
-    "7. Use each attached image only for the step immediately preceding it.",
-    "8. Do not output phrases such as 'Image of Step' or merely say 'parts from the previous step'.",
-    "9. Do not copy OCR text without explaining it.",
-    "10. Do not omit later steps.",
-    "11. Do not invent colors, pins, components, connections, or safety instructions.",
-    "12. Preserve explicit safety directions that appear in the approved material, but do not create new ones.",
-    "13. If an image or text does not clearly show an important detail, say what is unclear rather than guessing.",
-    "14. Do not include an unrelated lesson summary.",
+    "6. Explain what the learner connects or does.",
+    "7. Associate each image only with the step immediately preceding it.",
+    "8. Do not output 'Image of Step' or merely repeat OCR text.",
+    "9. Do not omit later steps.",
+    "10. Do not invent pins, colors, components, connections, or safety instructions.",
+    "11. Preserve explicit safety directions contained in the approved materials.",
+    "12. State when an important visual detail is unclear.",
   ].join("\n");
 
   return callGemini(
     systemInstruction,
-    contents,
+    parts,
   );
 }

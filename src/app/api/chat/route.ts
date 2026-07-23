@@ -6,9 +6,11 @@ import {
 } from "@/lib/rag/search";
 
 import {
+  GEMINI_MODEL_NAME,
   generateGroundedAnswer,
   generateGroundedBuildGuide,
   generateGroundedStepAnswer,
+  type ChatHistoryMessage,
 } from "@/lib/rag/gemini";
 
 import {
@@ -20,6 +22,9 @@ export const dynamic = "force-dynamic";
 
 const BUILD_SOURCE_PATTERN =
   "%BotsBuildFeb2026.pdf%";
+
+const DOWNLOAD_SOURCE_PATTERN =
+  "%Blocks and Bots Download Instructions.pptx%";
 
 const DOCUMENT_COLUMNS = [
   "id",
@@ -36,9 +41,17 @@ const DOCUMENT_COLUMNS = [
   "metadata",
 ].join(",");
 
+type ConversationTopic =
+  | "microbit-build"
+  | "download-instructions"
+  | "pairing"
+  | "lesson"
+  | null;
+
 type ChatRequestBody = {
   question?: unknown;
   message?: unknown;
+  history?: unknown;
 };
 
 type ChatSource = {
@@ -59,6 +72,41 @@ type ChatImage = {
   page: number | null;
   slide: number | null;
 };
+
+type GenerationInfo = {
+  provider:
+    | "gemini"
+    | "approved-materials"
+    | "router";
+  model: string | null;
+  grounded: boolean;
+};
+
+function geminiGeneration(): GenerationInfo {
+  return {
+    provider: "gemini",
+    model:
+      GEMINI_MODEL_NAME,
+    grounded: true,
+  };
+}
+
+function approvedGeneration(): GenerationInfo {
+  return {
+    provider:
+      "approved-materials",
+    model: null,
+    grounded: true,
+  };
+}
+
+function routerGeneration(): GenerationInfo {
+  return {
+    provider: "router",
+    model: null,
+    grounded: false,
+  };
+}
 
 function readQuestion(
   body: ChatRequestBody,
@@ -82,6 +130,67 @@ function readQuestion(
   return "";
 }
 
+function readHistory(
+  value: unknown,
+): ChatHistoryMessage[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const history:
+    ChatHistoryMessage[] = [];
+
+  for (
+    const item
+    of value.slice(-16)
+  ) {
+    if (
+      !item ||
+      typeof item !== "object"
+    ) {
+      continue;
+    }
+
+    const record =
+      item as Record<
+        string,
+        unknown
+      >;
+
+    const role =
+      record.role;
+
+    const rawContent =
+      typeof record.content ===
+        "string"
+        ? record.content
+        : typeof record.text ===
+            "string"
+          ? record.text
+          : "";
+
+    if (
+      (
+        role !== "user" &&
+        role !== "assistant"
+      ) ||
+      !rawContent.trim()
+    ) {
+      continue;
+    }
+
+    history.push({
+      role,
+      content:
+        rawContent
+          .trim()
+          .slice(0, 5000),
+    });
+  }
+
+  return history.slice(-12);
+}
+
 function normalizeQuestion(
   question: string,
 ): string {
@@ -103,34 +212,260 @@ function normalizeQuestion(
     .trim();
 }
 
-function extractStepNumber(
+function extractStepNumbers(
   text: string,
-): number | null {
+): number[] {
   const normalized =
     normalizeQuestion(text);
 
-  const match =
-    normalized.match(
-      /\bstep\s*#?\s*(\d{1,2})\b/,
+  const matches =
+    normalized.matchAll(
+      /\bstep\s*#?\s*(\d{1,2})\b/g,
     );
 
-  if (!match) {
-    return null;
+  const numbers =
+    new Set<number>();
+
+  for (const match of matches) {
+    const number =
+      Number(match[1]);
+
+    if (
+      Number.isInteger(number) &&
+      number >= 1
+    ) {
+      numbers.add(number);
+    }
   }
 
-  const stepNumber =
-    Number(match[1]);
+  return Array.from(numbers);
+}
+
+function extractStepNumber(
+  text: string,
+): number | null {
+  const numbers =
+    extractStepNumbers(text);
+
+  return numbers[0] ?? null;
+}
+
+function detectTopicInText(
+  text: string,
+): ConversationTopic {
+  const normalized =
+    normalizeQuestion(text);
 
   if (
-    !Number.isInteger(
-      stepNumber,
-    ) ||
-    stepNumber < 1
+    /\b(download|install|installation|home screen|apps screen|qr code)\b/.test(
+      normalized,
+    )
   ) {
+    return "download-instructions";
+  }
+
+  if (
+    /\b(pair|pairing|choose your microbit name)\b/.test(
+      normalized,
+    )
+  ) {
+    return "pairing";
+  }
+
+  const containsBuildPart =
+    /\b(led|leds|breadboard|alligator|gnd|motor|battery pack|plug\/socket|socket\/socket)\b/.test(
+      normalized,
+    );
+
+  const mentionsBuild =
+    /\b(build|building|assemble|assembly|circuit|breadboard|wiring|step)\b/.test(
+      normalized,
+    );
+
+  if (
+    containsBuildPart ||
+    (
+      normalized.includes(
+        "microbit",
+      ) &&
+      mentionsBuild
+    )
+  ) {
+    return "microbit-build";
+  }
+
+  if (
+    /\b(lesson|curriculum|tech circle|classroom activity)\b/.test(
+      normalized,
+    )
+  ) {
+    return "lesson";
+  }
+
+  return null;
+}
+
+function detectHistoryTopic(
+  history: ChatHistoryMessage[],
+): ConversationTopic {
+  for (
+    let index =
+      history.length - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    const topic =
+      detectTopicInText(
+        history[index].content,
+      );
+
+    if (topic) {
+      return topic;
+    }
+  }
+
+  return null;
+}
+
+function findLastReferencedStep(
+  history: ChatHistoryMessage[],
+): number | null {
+  /*
+   * Prefer the most recent user message.
+   */
+  for (
+    let index =
+      history.length - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    const message =
+      history[index];
+
+    if (
+      message.role !== "user"
+    ) {
+      continue;
+    }
+
+    const numbers =
+      extractStepNumbers(
+        message.content,
+      );
+
+    if (numbers.length === 1) {
+      return numbers[0];
+    }
+  }
+
+  /*
+   * Use an assistant answer only when it references
+   * exactly one numbered step.
+   */
+  for (
+    let index =
+      history.length - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    const message =
+      history[index];
+
+    if (
+      message.role !==
+      "assistant"
+    ) {
+      continue;
+    }
+
+    const numbers =
+      extractStepNumbers(
+        message.content,
+      );
+
+    if (numbers.length === 1) {
+      return numbers[0];
+    }
+  }
+
+  return null;
+}
+
+function resolveRequestedStep(
+  question: string,
+  history: ChatHistoryMessage[],
+): number | null {
+  const explicitStep =
+    extractStepNumber(
+      question,
+    );
+
+  if (explicitStep !== null) {
+    return explicitStep;
+  }
+
+  const normalized =
+    normalizeQuestion(question);
+
+  const previousStep =
+    findLastReferencedStep(
+      history,
+    );
+
+  if (previousStep === null) {
     return null;
   }
 
-  return stepNumber;
+  if (
+    /\b(next|following)\b/.test(
+      normalized,
+    )
+  ) {
+    return previousStep + 1;
+  }
+
+  if (
+    /\b(previous|prior|before that)\b/.test(
+      normalized,
+    )
+  ) {
+    return Math.max(
+      1,
+      previousStep - 1,
+    );
+  }
+
+  if (
+    /\b(this|that|same)\b/.test(
+      normalized,
+    ) &&
+    /\b(image|picture|photo|step)\b/.test(
+      normalized,
+    )
+  ) {
+    return previousStep;
+  }
+
+  return null;
+}
+
+function isStepFollowUp(
+  question: string,
+): boolean {
+  const normalized =
+    normalizeQuestion(question);
+
+  return (
+    extractStepNumber(
+      normalized,
+    ) !== null ||
+    /\b(next|following|previous|prior)\b/.test(
+      normalized,
+    ) ||
+    /\b(this|that|same)\s+(step|image|picture)\b/.test(
+      normalized,
+    )
+  );
 }
 
 function normalizeSearchResult(
@@ -191,6 +526,69 @@ function normalizeSearchResult(
   };
 }
 
+function sortAndDeduplicateSteps(
+  results: SearchResult[],
+): SearchResult[] {
+  const sorted =
+    [...results].sort(
+      (first, second) => {
+        const firstStep =
+          extractStepNumber(
+            [
+              first.title,
+              first.section,
+            ].join(" "),
+          ) ??
+          Number.MAX_SAFE_INTEGER;
+
+        const secondStep =
+          extractStepNumber(
+            [
+              second.title,
+              second.section,
+            ].join(" "),
+          ) ??
+          Number.MAX_SAFE_INTEGER;
+
+        return firstStep -
+          secondStep;
+      },
+    );
+
+  const unique =
+    new Map<
+      number,
+      SearchResult
+    >();
+
+  for (const result of sorted) {
+    const stepNumber =
+      extractStepNumber(
+        [
+          result.title,
+          result.section,
+          result.content,
+        ].join(" "),
+      );
+
+    if (
+      stepNumber === null ||
+      unique.has(stepNumber)
+    ) {
+      continue;
+    }
+
+    unique.set(
+      stepNumber,
+      result,
+    );
+  }
+
+  return Array.from(
+    unique.values(),
+  );
+}
+
 async function searchBuildSteps(): Promise<
   SearchResult[]
 > {
@@ -226,94 +624,58 @@ async function searchBuildSteps(): Promise<
     return [];
   }
 
-  const results =
-    data
-      .map((item) =>
-        normalizeSearchResult(
-          item as Partial<SearchResult>,
-        ),
-      )
-      .filter(
-        (result) =>
-          extractStepNumber(
-            result.title,
-          ) !== null,
-      );
-
-  results.sort(
-    (first, second) => {
-      const firstNumber =
-        extractStepNumber(
-          first.title,
-        ) ??
-        Number.MAX_SAFE_INTEGER;
-
-      const secondNumber =
-        extractStepNumber(
-          second.title,
-        ) ??
-        Number.MAX_SAFE_INTEGER;
-
-      return (
-        firstNumber -
-        secondNumber
-      );
-    },
-  );
-
-  const uniqueByStep =
-    new Map<number, SearchResult>();
-
-  for (const result of results) {
-    const stepNumber =
-      extractStepNumber(
-        result.title,
-      );
-
-    if (
-      stepNumber === null ||
-      uniqueByStep.has(
-        stepNumber,
-      )
-    ) {
-      continue;
-    }
-
-    uniqueByStep.set(
-      stepNumber,
-      result,
-    );
-  }
-
-  return Array.from(
-    uniqueByStep.values(),
+  return sortAndDeduplicateSteps(
+    data.map((item) =>
+      normalizeSearchResult(
+        item as Partial<SearchResult>,
+      ),
+    ),
   );
 }
 
-function isMicrobitBuildQuestion(
-  question: string,
-): boolean {
-  const normalized =
-    normalizeQuestion(question);
-
-  const mentionsMicrobit =
-    normalized.includes(
-      "microbit",
+async function searchDownloadSteps(): Promise<
+  SearchResult[]
+> {
+  const {
+    data,
+    error,
+  } = await supabaseAdmin
+    .from("documents")
+    .select(DOCUMENT_COLUMNS)
+    .ilike(
+      "source_file",
+      DOWNLOAD_SOURCE_PATTERN,
+    )
+    .order(
+      "slide_number",
+      {
+        ascending: true,
+        nullsFirst: false,
+      },
     );
 
-  const mentionsBuild =
-    /\b(build|building|assemble|assembly|circuit|breadboard|wire|wiring|step)\b/.test(
-      normalized,
+  if (error) {
+    throw new Error(
+      `Download-step search failed: ${error.message}`,
     );
+  }
 
-  return (
-    mentionsMicrobit &&
-    mentionsBuild
+  if (!Array.isArray(data)) {
+    return [];
+  }
+
+  return sortAndDeduplicateSteps(
+    data.map((item) =>
+      normalizeSearchResult(
+        item as Partial<SearchResult>,
+      ),
+    ),
   );
 }
 
 function isFullBuildGuideRequest(
   question: string,
+  topic: ConversationTopic,
 ): boolean {
   const normalized =
     normalizeQuestion(question);
@@ -327,9 +689,8 @@ function isFullBuildGuideRequest(
   }
 
   if (
-    !isMicrobitBuildQuestion(
-      normalized,
-    )
+    topic !==
+    "microbit-build"
   ) {
     return false;
   }
@@ -344,10 +705,10 @@ function isFullBuildGuideRequest(
     /\bevery step\b/.test(
       normalized,
     ) ||
-    /\bhow\b.*\bbuild\b/.test(
+    /\ball of them\b/.test(
       normalized,
     ) ||
-    /\bbuild\b.*\bmicrobit\b/.test(
+    /\bhow\b.*\bbuild\b/.test(
       normalized,
     ) ||
     /\bbuilding\b.*\bmicrobit\b/.test(
@@ -356,35 +717,7 @@ function isFullBuildGuideRequest(
   );
 }
 
-function isImageRequest(
-  question: string,
-): boolean {
-  const normalized =
-    normalizeQuestion(question);
-
-  return (
-    /\b(image|images|picture|pictures|photo|photos|preview|visual|visuals)\b/.test(
-      normalized,
-    ) ||
-    /\blook like\b/.test(
-      normalized,
-    ) ||
-    /\blooks like\b/.test(
-      normalized,
-    ) ||
-    /\bshow me\b/.test(
-      normalized,
-    ) ||
-    /\blet me see\b/.test(
-      normalized,
-    ) ||
-    /\bwant to see\b/.test(
-      normalized,
-    )
-  );
-}
-
-function isBuildImageSequenceRequest(
+function asksForImageSequence(
   question: string,
 ): boolean {
   const normalized =
@@ -395,7 +728,7 @@ function isBuildImageSequenceRequest(
       normalized,
     );
 
-  const asksForSequence =
+  const asksForRange =
     /\bto (the )?end\b/.test(
       normalized,
     ) ||
@@ -414,7 +747,7 @@ function isBuildImageSequenceRequest(
 
   return (
     asksForImages &&
-    asksForSequence
+    asksForRange
   );
 }
 
@@ -424,149 +757,49 @@ function requestedImageStartStep(
   const normalized =
     normalizeQuestion(question);
 
-  const numberedMatch =
+  const match =
     normalized.match(
-      /\bfrom\s+step\s*(\d{1,2})\s+to\s+(?:the\s+)?end\b/,
+      /\bfrom\s+step\s*(\d{1,2})\b/,
     );
 
-  if (numberedMatch) {
+  if (match) {
     return Number(
-      numberedMatch[1],
+      match[1],
     );
   }
 
   return 1;
 }
 
-function getSearchableText(
-  result: SearchResult,
-): string {
-  return [
-    result.title,
-    result.section,
-    result.content,
-    result.source_file,
-  ]
-    .join(" ")
-    .toLowerCase();
-}
-
-function scoreImageResult(
-  result: SearchResult,
+function isImageRequest(
   question: string,
-): number {
-  let score =
-    result.similarity;
-
-  const normalizedQuestion =
+): boolean {
+  const normalized =
     normalizeQuestion(question);
 
-  const searchableText =
-    getSearchableText(result);
-
-  if (
-    result.file_type ===
-    "image"
-  ) {
-    score += 0.2;
-  }
-
-  if (
-    result.should_display_image &&
-    result.image_paths.length > 0
-  ) {
-    score += 0.05;
-  }
-
-  const keywords =
-    normalizedQuestion
-      .replace(
-        /[^\p{L}\p{N}]+/gu,
-        " ",
-      )
-      .split(/\s+/)
-      .filter(
-        (word) =>
-          word.length >= 4,
-      );
-
-  for (const keyword of keywords) {
-    if (
-      searchableText.includes(
-        keyword,
-      )
-    ) {
-      score += 0.025;
-    }
-  }
-
-  if (
-    normalizedQuestion.includes(
-      "final",
-    ) &&
-    searchableText.includes(
-      "final",
+  return (
+    /\b(image|images|picture|pictures|photo|photos|preview|visual|visuals)\b/.test(
+      normalized,
+    ) ||
+    /\blook like\b/.test(
+      normalized,
+    ) ||
+    /\bshow me\b/.test(
+      normalized,
+    ) ||
+    /\blet me see\b/.test(
+      normalized,
+    ) ||
+    /\bwant to see\b/.test(
+      normalized,
     )
-  ) {
-    score += 0.2;
-  }
-
-  if (
-    normalizedQuestion.includes(
-      "palette",
-    ) &&
-    searchableText.includes(
-      "palette",
-    )
-  ) {
-    score += 0.2;
-  }
-
-  if (
-    normalizedQuestion.includes(
-      "virtue",
-    ) &&
-    searchableText.includes(
-      "virtue",
-    )
-  ) {
-    score += 0.15;
-  }
-
-  return score;
-}
-
-function chooseImageResults(
-  results: SearchResult[],
-  question: string,
-  limit = 2,
-): SearchResult[] {
-  return [...results]
-    .filter(
-      (result) =>
-        result.should_display_image &&
-        result.image_paths.length > 0,
-    )
-    .sort(
-      (first, second) =>
-        scoreImageResult(
-          second,
-          question,
-        ) -
-        scoreImageResult(
-          first,
-          question,
-        ),
-    )
-    .slice(0, limit);
+  );
 }
 
 function chooseTextContextResults(
   results: SearchResult[],
 ): SearchResult[] {
-  if (
-    results.length === 0
-  ) {
+  if (results.length === 0) {
     return [];
   }
 
@@ -586,6 +819,122 @@ function chooseTextContextResults(
         cutoff,
     )
     .slice(0, 5);
+}
+
+function getSearchableText(
+  result: SearchResult,
+): string {
+  return [
+    result.title,
+    result.section,
+    result.content,
+    result.source_file,
+  ]
+    .join(" ")
+    .toLowerCase();
+}
+
+function chooseImageResults(
+  results: SearchResult[],
+  question: string,
+  limit = 2,
+): SearchResult[] {
+  const normalized =
+    normalizeQuestion(question);
+
+  return [...results]
+    .filter(
+      (result) =>
+        result.should_display_image &&
+        result.image_paths.length > 0,
+    )
+    .sort(
+      (first, second) => {
+        const firstText =
+          getSearchableText(first);
+
+        const secondText =
+          getSearchableText(second);
+
+        let firstScore =
+          first.similarity;
+
+        let secondScore =
+          second.similarity;
+
+        for (
+          const keyword
+          of normalized.split(/\s+/)
+        ) {
+          if (
+            keyword.length >= 4 &&
+            firstText.includes(
+              keyword,
+            )
+          ) {
+            firstScore += 0.04;
+          }
+
+          if (
+            keyword.length >= 4 &&
+            secondText.includes(
+              keyword,
+            )
+          ) {
+            secondScore += 0.04;
+          }
+        }
+
+        if (
+          first.file_type ===
+          "image"
+        ) {
+          firstScore += 0.2;
+        }
+
+        if (
+          second.file_type ===
+          "image"
+        ) {
+          secondScore += 0.2;
+        }
+
+        return (
+          secondScore -
+          firstScore
+        );
+      },
+    )
+    .slice(0, limit);
+}
+
+function enrichQuestionWithTopic(
+  question: string,
+  topic: ConversationTopic,
+): string {
+  if (
+    topic ===
+    "microbit-build"
+  ) {
+    return `${question}\nConversation topic: micro:bit building guide.`;
+  }
+
+  if (
+    topic ===
+    "download-instructions"
+  ) {
+    return `${question}\nConversation topic: Blocks and Bots download instructions.`;
+  }
+
+  if (topic === "pairing") {
+    return `${question}\nConversation topic: pairing the micro:bit with the Blocks and Bots app.`;
+  }
+
+  if (topic === "lesson") {
+    return `${question}\nConversation topic: Blocks and Bots curriculum lesson.`;
+  }
+
+  return question;
 }
 
 function buildContext(
@@ -747,12 +1096,12 @@ function buildImages(
   return images;
 }
 
-function insufficientAnswer(): string {
-  return "I could not find enough verified information in the approved materials to answer that question.";
+function clarificationAnswer(): string {
+  return "Which guide do you mean: the micro:bit building guide or the Blocks and Bots download instructions?";
 }
 
-function missingImageAnswer(): string {
-  return "I found related approved information, but I could not find an approved image to display.";
+function insufficientAnswer(): string {
+  return "I could not find enough verified information in the approved materials to answer that question.";
 }
 
 export async function POST(
@@ -766,6 +1115,11 @@ export async function POST(
     const question =
       readQuestion(body);
 
+    const history =
+      readHistory(
+        body.history,
+      );
+
     if (!question) {
       return Response.json(
         {
@@ -778,40 +1132,43 @@ export async function POST(
       );
     }
 
-    const requestedStep =
-      extractStepNumber(
+    const currentTopic =
+      detectTopicInText(
         question,
       );
 
+    const historyTopic =
+      detectHistoryTopic(
+        history,
+      );
+
+    const resolvedTopic =
+      currentTopic ??
+      historyTopic;
+
+    const requestedStep =
+      resolveRequestedStep(
+        question,
+        history,
+      );
+
     /*
-     * Exact numbered build step.
+     * A request for multiple step images must run
+     * before the single exact-step handler.
      */
     if (
-      requestedStep !== null &&
-      (
-        isMicrobitBuildQuestion(
-          question,
-        ) ||
-        isImageRequest(
-          question,
-        )
+      asksForImageSequence(
+        question,
       )
     ) {
-      const buildSteps =
-        await searchBuildSteps();
-
-      const exactStep =
-        buildSteps.find(
-          (step) =>
-            extractStepNumber(
-              step.title,
-            ) ===
-            requestedStep,
-        );
-
-      if (!exactStep) {
+      if (
+        resolvedTopic !==
+          "microbit-build" &&
+        resolvedTopic !==
+          "download-instructions"
+      ) {
         const answer =
-          `I could not find Step ${requestedStep} in the approved micro:bit build guide.`;
+          clarificationAnswer();
 
         return Response.json({
           answer,
@@ -819,54 +1176,16 @@ export async function POST(
           grounded: false,
           sources: [],
           images: [],
+          generation:
+            routerGeneration(),
         });
       }
 
-      const answer =
-        await generateGroundedStepAnswer({
-          question,
-
-          title:
-            exactStep.title,
-
-          context:
-            buildContext([
-              exactStep,
-            ]),
-
-          imagePath:
-            exactStep.image_paths[0] ??
-            null,
-        });
-
-      return Response.json({
-        answer,
-        reply: answer,
-        grounded: true,
-
-        sources:
-          buildSources([
-            exactStep,
-          ]),
-
-        images:
-          buildImages(
-            [exactStep],
-            1,
-          ),
-      });
-    }
-
-    /*
-     * Request for build images from a step through the end.
-     */
-    if (
-      isBuildImageSequenceRequest(
-        question,
-      )
-    ) {
-      const buildSteps =
-        await searchBuildSteps();
+      const procedureSteps =
+        resolvedTopic ===
+        "microbit-build"
+          ? await searchBuildSteps()
+          : await searchDownloadSteps();
 
       const startStep =
         requestedImageStartStep(
@@ -874,16 +1193,19 @@ export async function POST(
         );
 
       const selectedSteps =
-        buildSteps.filter(
+        procedureSteps.filter(
           (step) => {
-            const stepNumber =
+            const number =
               extractStepNumber(
-                step.title,
+                [
+                  step.title,
+                  step.section,
+                ].join(" "),
               );
 
             return (
-              stepNumber !== null &&
-              stepNumber >=
+              number !== null &&
+              number >=
                 startStep
             );
           },
@@ -895,12 +1217,9 @@ export async function POST(
           selectedSteps.length,
         );
 
-      if (
-        selectedSteps.length === 0 ||
-        images.length === 0
-      ) {
+      if (images.length === 0) {
         const answer =
-          missingImageAnswer();
+          "I could not find approved images for the requested steps.";
 
         return Response.json({
           answer,
@@ -908,6 +1227,8 @@ export async function POST(
           grounded: false,
           sources: [],
           images: [],
+          generation:
+            approvedGeneration(),
         });
       }
 
@@ -916,7 +1237,7 @@ export async function POST(
           selectedSteps[0].title,
         );
 
-      const finalNumber =
+      const lastNumber =
         extractStepNumber(
           selectedSteps[
             selectedSteps.length - 1
@@ -924,7 +1245,7 @@ export async function POST(
         );
 
       const answer =
-        `Here are the approved build images from Step ${firstNumber} through Step ${finalNumber}.`;
+        `Here are the approved images from Step ${firstNumber} through Step ${lastNumber}.`;
 
       return Response.json({
         answer,
@@ -937,15 +1258,136 @@ export async function POST(
           ),
 
         images,
+
+        generation:
+          approvedGeneration(),
       });
     }
 
     /*
-     * Complete build-guide explanation.
+     * Exact step or conversational follow-up:
+     *
+     * User: microbit Step 1
+     * User: Step 2?
+     * User: show me the next one
+     */
+    if (
+      requestedStep !== null &&
+      isStepFollowUp(
+        question,
+      )
+    ) {
+      if (
+        resolvedTopic === null
+      ) {
+        const answer =
+          clarificationAnswer();
+
+        return Response.json({
+          answer,
+          reply: answer,
+          grounded: false,
+          sources: [],
+          images: [],
+          generation:
+            routerGeneration(),
+        });
+      }
+
+      if (
+        resolvedTopic ===
+          "microbit-build" ||
+        resolvedTopic ===
+          "download-instructions"
+      ) {
+        const procedureSteps =
+          resolvedTopic ===
+          "microbit-build"
+            ? await searchBuildSteps()
+            : await searchDownloadSteps();
+
+        const exactStep =
+          procedureSteps.find(
+            (step) =>
+              extractStepNumber(
+                [
+                  step.title,
+                  step.section,
+                ].join(" "),
+              ) ===
+              requestedStep,
+          );
+
+        if (!exactStep) {
+          const answer =
+            `I could not find Step ${requestedStep} in the approved guide.`;
+
+          return Response.json({
+            answer,
+            reply: answer,
+            grounded: false,
+            sources: [],
+            images: [],
+            generation:
+              approvedGeneration(),
+          });
+        }
+
+        const guideName =
+          resolvedTopic ===
+          "microbit-build"
+            ? "micro:bit building guide"
+            : "Blocks and Bots download instructions";
+
+        const answer =
+          await generateGroundedStepAnswer({
+            question,
+            guideName,
+
+            title:
+              exactStep.title,
+
+            context:
+              buildContext([
+                exactStep,
+              ]),
+
+            imagePath:
+              exactStep.image_paths[0] ??
+              null,
+
+            history,
+          });
+
+        return Response.json({
+          answer,
+          reply: answer,
+          grounded: true,
+
+          sources:
+            buildSources([
+              exactStep,
+            ]),
+
+          images:
+            buildImages(
+              [exactStep],
+              1,
+            ),
+
+          generation:
+            geminiGeneration(),
+        });
+      }
+    }
+
+    /*
+     * Entire micro:bit build guide.
      */
     if (
       isFullBuildGuideRequest(
         question,
+        resolvedTopic,
       )
     ) {
       const buildSteps =
@@ -963,6 +1405,8 @@ export async function POST(
           grounded: false,
           sources: [],
           images: [],
+          generation:
+            approvedGeneration(),
         });
       }
 
@@ -984,6 +1428,8 @@ export async function POST(
                   null,
               }),
             ),
+
+          history,
         });
 
       return Response.json({
@@ -1001,12 +1447,22 @@ export async function POST(
             buildSteps,
             buildSteps.length,
           ),
+
+        generation:
+          geminiGeneration(),
       });
     }
 
     /*
-     * General RAG search.
+     * General semantic search enriched by the
+     * conversation's current topic.
      */
+    const retrievalQuestion =
+      enrichQuestionWithTopic(
+        question,
+        resolvedTopic,
+      );
+
     const imageRequest =
       isImageRequest(
         question,
@@ -1014,7 +1470,7 @@ export async function POST(
 
     const searchResults =
       await searchDocuments(
-        question,
+        retrievalQuestion,
         {
           matchCount: 20,
 
@@ -1026,13 +1482,14 @@ export async function POST(
       );
 
     /*
-     * General direct image request.
+     * Direct image requests return approved images
+     * without calling Gemini.
      */
     if (imageRequest) {
       const imageResults =
         chooseImageResults(
           searchResults,
-          question,
+          retrievalQuestion,
           2,
         );
 
@@ -1042,11 +1499,9 @@ export async function POST(
           2,
         );
 
-      if (
-        images.length === 0
-      ) {
+      if (images.length === 0) {
         const answer =
-          missingImageAnswer();
+          "I found related information, but no approved image was available to display.";
 
         return Response.json({
           answer,
@@ -1054,13 +1509,15 @@ export async function POST(
           grounded: false,
           sources: [],
           images: [],
+          generation:
+            approvedGeneration(),
         });
       }
 
       const answer =
         images.length === 1
-          ? "Here is the approved reference image from the curriculum materials."
-          : "Here are the approved reference images from the curriculum materials.";
+          ? "Here is the approved reference image."
+          : "Here are the approved reference images.";
 
       return Response.json({
         answer,
@@ -1073,12 +1530,12 @@ export async function POST(
           ),
 
         images,
+
+        generation:
+          approvedGeneration(),
       });
     }
 
-    /*
-     * General text answer using retrieved context.
-     */
     const contextResults =
       chooseTextContextResults(
         searchResults,
@@ -1096,6 +1553,8 @@ export async function POST(
         grounded: false,
         sources: [],
         images: [],
+        generation:
+          approvedGeneration(),
       });
     }
 
@@ -1107,6 +1566,8 @@ export async function POST(
           buildContext(
             contextResults,
           ),
+
+        history,
       });
 
     return Response.json({
@@ -1124,6 +1585,9 @@ export async function POST(
           contextResults,
           2,
         ),
+
+      generation:
+        geminiGeneration(),
     });
   } catch (error: unknown) {
     console.error(
@@ -1143,6 +1607,4 @@ export async function POST(
       },
     );
   }
-
-  
 }

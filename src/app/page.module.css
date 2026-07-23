@@ -8,7 +8,7 @@
   .chat {
     display: flex;
     flex-direction: column;
-    width: min(880px, 100%);
+    width: min(900px, 100%);
     min-height: 820px;
     margin: 0 auto;
     overflow: hidden;
@@ -54,7 +54,7 @@
   }
   
   .message {
-    max-width: 78%;
+    max-width: 84%;
     padding: 14px 16px;
     border-radius: 8px;
     font-size: 17px;
@@ -62,14 +62,14 @@
   }
   
   .userMessage {
-    background: #245477;
     color: #ffffff;
+    background: #245477;
   }
   
   .assistantMessage {
+    color: #202020;
     background: #f2f2f2;
     border: 1px solid #dcdcdc;
-    color: #202020;
   }
   
   .messageText {
@@ -82,7 +82,14 @@
   }
   
   .imageList {
-    margin-top: 14px;
+    display: grid;
+    grid-template-columns:
+      repeat(
+        auto-fit,
+        minmax(240px, 1fr)
+      );
+    gap: 12px;
+    margin-top: 16px;
   }
   
   .imageCard {
@@ -96,21 +103,14 @@
   .sourceImage {
     display: block;
     width: 100%;
-    max-height: 560px;
+    height: 100%;
+    max-height: 520px;
     object-fit: contain;
     background: #ffffff;
   }
   
-  .imageCaption {
-    padding: 10px 12px;
-    color: #555555;
-    font-size: 13px;
-    line-height: 1.4;
-    border-top: 1px solid #e0e0e0;
-  }
-  
   .sources {
-    margin-top: 12px;
+    margin-top: 14px;
     color: #4d4d4d;
     font-size: 14px;
   }
@@ -138,6 +138,15 @@
   .sourceItem span {
     color: #666666;
     font-size: 12px;
+  }
+  
+  .generationBadge {
+    margin-top: 12px;
+    padding-top: 10px;
+    color: #747474;
+    font-size: 11px;
+    line-height: 1.4;
+    border-top: 1px solid #dddddd;
   }
   
   .form {
@@ -197,7 +206,11 @@
     }
   
     .message {
-      max-width: 90%;
+      max-width: 94%;
+    }
+  
+    .imageList {
+      grid-template-columns: 1fr;
     }
   
     .form {
