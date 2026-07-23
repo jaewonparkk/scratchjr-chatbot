@@ -19,6 +19,7 @@ import {
   generateGroundedBuildGuide,
   generateGroundedLessonAnswer,
   generateGroundedStepAnswer,
+  generateGroundedTroubleshootingAnswer,
   type ChatHistoryMessage,
 } from "@/lib/rag/gemini";
 
@@ -1336,13 +1337,16 @@ export async function POST(
             exactStep,
           ]),
 
+        /*
+         * Exact build/download steps are inherently visual.
+         * Always display the approved image when one exists so
+         * equivalent phrasings produce the same response.
+         */
         images:
-          intent.wantsImage
-            ? buildImages(
-                [exactStep],
-                1,
-              )
-            : [],
+          buildImages(
+            [exactStep],
+            1,
+          ),
 
         generation:
           geminiGeneration(),
@@ -1560,17 +1564,30 @@ export async function POST(
     }
 
     const answer =
-      await generateGroundedAnswer({
-        question:
-          intent.normalizedQuestion,
+      intent.action ===
+        "troubleshoot"
+        ? await generateGroundedTroubleshootingAnswer({
+            question:
+              intent.normalizedQuestion,
 
-        context:
-          buildContext(
-            contextResults,
-          ),
+            context:
+              buildContext(
+                contextResults,
+              ),
 
-        history,
-      });
+            history,
+          })
+        : await generateGroundedAnswer({
+            question:
+              intent.normalizedQuestion,
+
+            context:
+              buildContext(
+                contextResults,
+              ),
+
+            history,
+          });
 
     return Response.json({
       answer,

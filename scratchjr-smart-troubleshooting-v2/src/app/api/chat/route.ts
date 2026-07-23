@@ -19,6 +19,7 @@ import {
   generateGroundedBuildGuide,
   generateGroundedLessonAnswer,
   generateGroundedStepAnswer,
+  generateGroundedTroubleshootingAnswer,
   type ChatHistoryMessage,
 } from "@/lib/rag/gemini";
 
@@ -888,6 +889,54 @@ function buildImages(
   return images;
 }
 
+function hasPlugSocketMismatch(
+  intent: ParsedIntent,
+): boolean {
+  const text = [
+    intent.normalizedQuestion,
+    ...intent.components,
+  ]
+    .join(" ")
+    .toLowerCase()
+    .replace(
+      /[-_]+/g,
+      "/",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const mentionsPlugPlug =
+    /\bplug\s*(?:\/|to)?\s*plug\b/.test(
+      text,
+    );
+
+  const mentionsSocketSocket =
+    /\bsocket\s*(?:\/|to)?\s*socket\b/.test(
+      text,
+    );
+
+  const describesMismatch =
+    /\b(only|no|not have|don['’]?t have|do not have|without|missing|need|needs|required|instead|replace|substitute)\b/.test(
+      text,
+    );
+
+  return (
+    mentionsPlugPlug &&
+    mentionsSocketSocket &&
+    describesMismatch
+  );
+}
+
+function connectorMismatchClarification(): string {
+  return [
+    "Plug/plug and socket/socket wires are not directly interchangeable, but that does not automatically mean you have to stop the build.",
+    "The workable option depends on the two endpoints used in the current step.",
+    "Check whether your kit has a plug/socket wire, an alligator clip, or a breadboard connection that can bridge the same two endpoints without changing the intended polarity or pin.",
+    "Do not force connectors or tape loose contacts together.",
+    "Which build step are you on, or can you share a clear photo of the two connection points and the parts you have?",
+  ].join(" ");
+}
+
 function clarificationResponse(
   answer: string,
 ) {
@@ -966,6 +1015,25 @@ export async function POST(
         intent,
         history,
       );
+
+    /*
+     * A connector mismatch cannot be solved responsibly
+     * until we know the two endpoints in the current step.
+     * Do not let the model turn missing context into a
+     * blanket "buy the required part" refusal.
+     */
+    if (
+      intent.action ===
+        "troubleshoot" &&
+      requestedStep === null &&
+      hasPlugSocketMismatch(
+        intent,
+      )
+    ) {
+      return clarificationResponse(
+        connectorMismatchClarification(),
+      );
+    }
 
     /*
      * Exact curriculum lesson.
@@ -1336,13 +1404,16 @@ export async function POST(
             exactStep,
           ]),
 
+        /*
+         * Exact build/download steps are inherently visual.
+         * Always display the approved image when one exists so
+         * equivalent phrasings produce the same response.
+         */
         images:
-          intent.wantsImage
-            ? buildImages(
-                [exactStep],
-                1,
-              )
-            : [],
+          buildImages(
+            [exactStep],
+            1,
+          ),
 
         generation:
           geminiGeneration(),
@@ -1477,6 +1548,48 @@ export async function POST(
         },
       );
 
+    let groundedSearchResults =
+      searchResults;
+
+    /*
+     * For step-specific troubleshooting, put the exact
+     * approved step ahead of semantic matches so Gemini
+     * reasons about the correct endpoints and polarity.
+     */
+    if (
+      intent.action ===
+        "troubleshoot" &&
+      resolvedTopic ===
+        "microbit-build" &&
+      requestedStep !== null
+    ) {
+      const buildSteps =
+        await searchBuildSteps();
+
+      const exactStep =
+        buildSteps.find(
+          (step) =>
+            extractStepNumber(
+              [
+                step.title,
+                step.section,
+              ].join(" "),
+            ) ===
+            requestedStep,
+        );
+
+      if (exactStep) {
+        groundedSearchResults = [
+          exactStep,
+          ...searchResults.filter(
+            (result) =>
+              result.chunk_id !==
+              exactStep.chunk_id,
+          ),
+        ];
+      }
+    }
+
     /*
      * A non-numbered image request uses semantic
      * retrieval, but only returns approved images.
@@ -1488,7 +1601,7 @@ export async function POST(
     ) {
       const imageResults =
         chooseImageResults(
-          searchResults,
+          groundedSearchResults,
           intent,
           2,
         );
@@ -1538,7 +1651,7 @@ export async function POST(
 
     const contextResults =
       chooseTextContextResults(
-        searchResults,
+        groundedSearchResults,
         intent.action,
       );
 
@@ -1560,17 +1673,30 @@ export async function POST(
     }
 
     const answer =
-      await generateGroundedAnswer({
-        question:
-          intent.normalizedQuestion,
+      intent.action ===
+        "troubleshoot"
+        ? await generateGroundedTroubleshootingAnswer({
+            question:
+              intent.normalizedQuestion,
 
-        context:
-          buildContext(
-            contextResults,
-          ),
+            context:
+              buildContext(
+                contextResults,
+              ),
 
-        history,
-      });
+            history,
+          })
+        : await generateGroundedAnswer({
+            question:
+              intent.normalizedQuestion,
+
+            context:
+              buildContext(
+                contextResults,
+              ),
+
+            history,
+          });
 
     return Response.json({
       answer,

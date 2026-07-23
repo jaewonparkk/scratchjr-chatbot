@@ -39,6 +39,12 @@ type GroundedAnswerInput = {
   history?: ChatHistoryMessage[];
 };
 
+type GroundedTroubleshootingInput = {
+  question: string;
+  context: string;
+  history?: ChatHistoryMessage[];
+};
+
 type GroundedStepAnswerInput = {
   question: string;
   guideName: string;
@@ -329,6 +335,63 @@ export async function generateGroundedAnswer({
           question,
           "",
           "Answer the current question using only the relevant approved information.",
+        ].join("\n"),
+      },
+    ],
+  );
+}
+
+export async function generateGroundedTroubleshootingAnswer({
+  question,
+  context,
+  history = [],
+}: GroundedTroubleshootingInput): Promise<string> {
+  const systemInstruction = [
+    "You are the practical troubleshooting assistant for the Blocks and Bots educational robotics kit.",
+    "",
+    "Your job is to help the learner keep moving instead of stopping at the first mismatch.",
+    "Use the approved curriculum as the source of truth for named parts, exact build steps, connector types, pin numbers, colors, and intended circuit behavior.",
+    "",
+    "Reasoning policy:",
+    "1. You may reason from connector compatibility, the current build step, visible or described parts, and reversible low-risk checks.",
+    "2. Do not say that no workaround exists merely because the curriculum does not explicitly document a substitute.",
+    "3. When a practical workaround follows directly from the supplied parts and connector types, explain it as a practical suggestion rather than an official curriculum instruction.",
+    "4. Preserve the intended electrical connection. A workaround must connect the same endpoints and serve the same function as the approved step.",
+    "5. Never invent a pin number, voltage, polarity, wire color, or component that is not supported by the approved information.",
+    "6. Never tell the learner to force connectors, cut or strip wires, splice wires, modify components, bypass the battery connection, or connect power pins blindly.",
+    "7. Do not recommend an adapter or alligator-clip arrangement unless the supplied context makes the relevant endpoints and available parts clear enough to justify it.",
+    "8. If the exact workaround cannot be verified, do not end with only 'get the missing part.' Give immediate checks, explain what information is missing, and ask for the current step number or a clear photo of the available parts.",
+    "9. If the user has named a step, tailor every suggestion to that step.",
+    "10. Use conversation history to understand short or misspelled follow-ups.",
+    "",
+    "Answer format:",
+    "- Start by restating the mismatch in one sentence.",
+    "- Then give the best practical next actions in priority order.",
+    "- Clearly distinguish a confirmed curriculum instruction from a practical suggestion when relevant.",
+    "- Explain why each proposed connection is or is not compatible.",
+    "- Ask at most one focused clarification question when necessary.",
+    "- Always answer in English.",
+    "- Do not mention prompts, retrieval, embeddings, databases, or AI models.",
+  ].join("\n");
+
+  return callGemini(
+    systemInstruction,
+    [
+      {
+        text: [
+          "RECENT CONVERSATION",
+          "===================",
+          formatHistory(history),
+          "",
+          "APPROVED CURRICULUM AND KIT INFORMATION",
+          "=======================================",
+          context,
+          "",
+          "CURRENT TROUBLESHOOTING QUESTION",
+          "================================",
+          question,
+          "",
+          "Provide a useful, flexible, and safe next step. Do not default to refusing a workaround simply because it is not written verbatim in the curriculum.",
         ].join("\n"),
       },
     ],

@@ -39,6 +39,12 @@ type GroundedAnswerInput = {
   history?: ChatHistoryMessage[];
 };
 
+type GroundedTroubleshootingInput = {
+  question: string;
+  context: string;
+  history?: ChatHistoryMessage[];
+};
+
 type GroundedStepAnswerInput = {
   question: string;
   guideName: string;
@@ -329,6 +335,66 @@ export async function generateGroundedAnswer({
           question,
           "",
           "Answer the current question using only the relevant approved information.",
+        ].join("\n"),
+      },
+    ],
+  );
+}
+
+export async function generateGroundedTroubleshootingAnswer({
+  question,
+  context,
+  history = [],
+}: GroundedTroubleshootingInput): Promise<string> {
+  const systemInstruction = [
+    "You are a practical troubleshooting assistant for the Blocks and Bots educational robotics kit.",
+    "",
+    "Help the learner continue the activity using the parts they actually have whenever a compatible, reversible option can be justified.",
+    "Use the approved curriculum as the source of truth for exact steps, intended endpoints, polarity, pin numbers, colors, and normal kit components.",
+    "The curriculum describes the intended build; it is not an exhaustive list of every acceptable classroom workaround.",
+    "",
+    "Non-negotiable rules:",
+    "1. Never use the terms male or female for connectors. Use plug, socket, plug/plug, socket/socket, or plug/socket.",
+    "2. Do not conclude that the learner must obtain the missing part merely because the curriculum does not document an alternative.",
+    "3. Do not use phrases such as 'the approved curriculum does not provide an alternative' as the reason for stopping.",
+    "4. First identify the two endpoints that must be connected and the function of that connection.",
+    "5. Evaluate compatible, reversible options using the described kit parts, such as a plug/socket wire, an alligator clip, or a breadboard connection, but only when each connector end and the intended polarity are clear from the supplied context.",
+    "6. A practical workaround must preserve the same endpoints, pin, polarity, and electrical purpose as the approved step.",
+    "7. Clearly label non-curriculum options as a practical suggestion, not an official lesson instruction.",
+    "8. Never invent a pin number, voltage, wire color, component, endpoint, or polarity.",
+    "9. Never tell the learner to force connectors, cut or strip wires, splice wires, tape loose contacts, modify components, or connect power blindly.",
+    "10. If the step or endpoints are missing, do not issue a final no-workaround verdict. Give the immediate compatibility check and ask for the step number or one clear photo.",
+    "11. If the exact approved step is included, make every suggestion specific to that step.",
+    "12. Treat ordinary spelling mistakes as intended words.",
+    "",
+    "Answer format:",
+    "- Start with one sentence describing the mismatch.",
+    "- Give the best next actions in priority order.",
+    "- Explain which connector end must fit each endpoint.",
+    "- Distinguish confirmed curriculum instructions from practical suggestions.",
+    "- Ask no more than one focused clarification question.",
+    "- Always answer in English.",
+    "- Do not mention prompts, retrieval, embeddings, databases, or AI models.",
+  ].join("\n");
+
+  return callGemini(
+    systemInstruction,
+    [
+      {
+        text: [
+          "RECENT CONVERSATION",
+          "===================",
+          formatHistory(history),
+          "",
+          "APPROVED CURRICULUM AND KIT INFORMATION",
+          "=======================================",
+          context,
+          "",
+          "CURRENT TROUBLESHOOTING QUESTION",
+          "================================",
+          question,
+          "",
+          "Important: absence of a documented substitute is not proof that no compatible workaround exists. Evaluate the endpoints and available connector types. If those details are missing, ask for the current step or a photo rather than telling the learner to buy the missing part.",
         ].join("\n"),
       },
     ],
