@@ -6,22 +6,53 @@
   }
 
   .workspace {
-    display: grid;
-    grid-template-columns: 300px minmax(0, 900px);
-    width: min(1220px, 100%);
+    display: flex;
+    flex-direction: column;
+    width: min(900px, 100%);
     min-height: 820px;
     margin: 0 auto;
     border: 1px solid #d8d8d8;
     background: #ffffff;
   }
 
+  .tabs {
+    display: flex;
+    gap: 4px;
+    padding: 10px 12px 0;
+    background: #ffffff;
+    border-bottom: 1px solid #d8d8d8;
+  }
+
+  .tab,
+  .activeTab {
+    padding: 11px 17px;
+    color: #61717c;
+    background: transparent;
+    border: 0;
+    border-bottom: 3px solid transparent;
+    font: inherit;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .tab:hover {
+    color: #245477;
+    background: #f4f7f9;
+  }
+
+  .activeTab {
+    color: #245477;
+    border-bottom-color: #245477;
+  }
+
   .researcher {
     display: flex;
     flex-direction: column;
     gap: 18px;
-    padding: 24px;
+    min-height: 760px;
+    padding: 34px;
     background: #eef3f6;
-    border-right: 1px solid #d8d8d8;
   }
 
   .eyebrow {
@@ -54,6 +85,7 @@
     border-radius: 10px;
     font-weight: 700;
     cursor: pointer;
+    max-width: 260px;
   }
 
   .uploadButton:hover {
@@ -92,6 +124,7 @@
   .researcherFiles {
     display: grid;
     gap: 8px;
+    width: min(640px, 100%);
   }
 
   .researcherFiles h3 {
@@ -100,12 +133,20 @@
   }
 
   .researcherFile {
-    display: grid;
-    gap: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
     padding: 10px;
     background: #ffffff;
     border: 1px solid #d5dfe5;
     border-radius: 8px;
+  }
+
+  .fileInfo {
+    display: grid;
+    min-width: 0;
+    gap: 3px;
   }
 
   .researcherFile strong {
@@ -121,6 +162,23 @@
     font-size: 11px;
   }
 
+  .trainButton {
+    padding: 8px 13px;
+    color: #ffffff;
+    background: #245477;
+    border: 0;
+    border-radius: 7px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .trainButton:disabled {
+    background: #9aaab5;
+    cursor: wait;
+  }
+
   .pipelineNote {
     display: grid;
     gap: 7px;
@@ -129,6 +187,7 @@
     background: #dfe9ef;
     border-radius: 9px;
     font-size: 12px;
+    width: min(640px, 100%);
   }
 
   .pipelineNote code {
@@ -367,15 +426,13 @@
     }
   
     .workspace {
-      display: flex;
-      flex-direction: column;
       min-height: 100vh;
       border: 0;
     }
 
     .researcher {
-      border-right: 0;
-      border-bottom: 1px solid #d8d8d8;
+      min-height: calc(100vh - 53px);
+      padding: 24px 20px;
     }
 
     .pipelineNote {

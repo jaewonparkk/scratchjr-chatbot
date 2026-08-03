@@ -119,6 +119,11 @@ export default function Home() {
     setIsLoading,
   ] = useState(false);
 
+  const [activeTab, setActiveTab] =
+    useState<"assistant" | "researcher">(
+      "assistant",
+    );
+
   const [researcherFiles, setResearcherFiles] =
     useState<ResearcherFile[]>([]);
 
@@ -130,6 +135,9 @@ export default function Home() {
 
   const [uploadError, setUploadError] =
     useState("");
+
+  const [trainingFile, setTrainingFile] =
+    useState<string | null>(null);
 
   const messagesEndRef =
     useRef<HTMLDivElement | null>(
@@ -229,7 +237,7 @@ export default function Home() {
       ]);
 
       setUploadMessage(
-        `${data.file.name} saved. It is ready for ingestion.`,
+        `${data.file.name} saved. Select Train to add it to the assistant.`,
       );
     } catch (error: unknown) {
       setUploadError(
@@ -239,6 +247,29 @@ export default function Home() {
       );
     } finally {
       setIsUploading(false);
+    }
+  }
+
+  async function trainResearchFile(fileName: string) {
+    if (trainingFile) return;
+
+    setTrainingFile(fileName);
+    setUploadMessage("");
+    setUploadError("");
+
+    try {
+      const response = await fetch("/api/researcher/train", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName }),
+      });
+      const data = (await response.json()) as { message?: string; error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Training failed.");
+      setUploadMessage(`${fileName} is now available to the assistant.`);
+    } catch (error: unknown) {
+      setUploadError(error instanceof Error ? error.message : "Training failed.");
+    } finally {
+      setTrainingFile(null);
     }
   }
 
@@ -410,7 +441,41 @@ export default function Home() {
   return (
     <main className={styles.page}>
       <div className={styles.workspace}>
-        <aside className={styles.researcher}>
+        <nav
+          className={styles.tabs}
+          aria-label="Blocks and Bots tools"
+        >
+          <button
+            type="button"
+            className={
+              activeTab === "assistant"
+                ? styles.activeTab
+                : styles.tab
+            }
+            onClick={() => {
+              setActiveTab("assistant");
+            }}
+          >
+            Assistant
+          </button>
+
+          <button
+            type="button"
+            className={
+              activeTab === "researcher"
+                ? styles.activeTab
+                : styles.tab
+            }
+            onClick={() => {
+              setActiveTab("researcher");
+            }}
+          >
+            Researcher
+          </button>
+        </nav>
+
+        {activeTab === "researcher" ? (
+        <section className={styles.researcher}>
           <div>
             <span className={styles.eyebrow}>
               Knowledge workspace
@@ -466,24 +531,31 @@ export default function Home() {
                   className={styles.researcherFile}
                   key={`${file.name}-${file.savedAt}`}
                 >
-                  <strong>{file.name}</strong>
-                  <span>
-                    {(file.size / 1024 / 1024).toFixed(1)} MB
-                  </span>
+                  <div className={styles.fileInfo}>
+                    <strong>{file.name}</strong>
+                    <span>
+                      {(file.size / 1024 / 1024).toFixed(1)} MB
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className={styles.trainButton}
+                    disabled={trainingFile !== null}
+                    onClick={() => { void trainResearchFile(file.name); }}
+                  >
+                    {trainingFile === file.name ? "Training..." : "Train"}
+                  </button>
                 </div>
               ))
             )}
           </div>
 
           <div className={styles.pipelineNote}>
-            <strong>Next step</strong>
-            <code>python -m ingestion.run</code>
-            <span>
-              Then review and upload embeddings.
-            </span>
+            <strong>No terminal needed</strong>
+            <span>Select Train and the server will process and index the file automatically.</span>
           </div>
-        </aside>
-
+        </section>
+        ) : (
         <section className={styles.chat}>
         <header className={styles.header}>
           <h1>
@@ -707,6 +779,7 @@ export default function Home() {
           )}
         </form>
         </section>
+        )}
       </div>
     </main>
   );
