@@ -18,19 +18,27 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       fileName?: unknown;
       filePath?: unknown;
-      content?: unknown;
+      question?: unknown;
+      assistantAnswer?: unknown;
+      correctedAnswer?: unknown;
     };
 
     if (
       typeof body.fileName !== "string" ||
       path.basename(body.fileName) !== body.fileName ||
       typeof body.filePath !== "string" ||
-      typeof body.content !== "string" ||
-      body.content.trim().length < 10 ||
-      body.content.trim().length > 10_000
+      typeof body.question !== "string" ||
+      body.question.trim().length < 1 ||
+      body.question.trim().length > 2_000 ||
+      typeof body.assistantAnswer !== "string" ||
+      body.assistantAnswer.trim().length < 1 ||
+      body.assistantAnswer.trim().length > 10_000 ||
+      typeof body.correctedAnswer !== "string" ||
+      body.correctedAnswer.trim().length < 10 ||
+      body.correctedAnswer.trim().length > 10_000
     ) {
       return Response.json(
-        { error: "Choose a trained file and enter a correction between 10 and 10,000 characters." },
+        { error: "Test a trained file and enter an improved answer between 10 and 10,000 characters." },
         { status: 400 },
       );
     }
@@ -58,12 +66,43 @@ export async function POST(request: Request) {
       `${path.parse(body.fileName).name}.json`,
     );
 
-    const parsed = JSON.parse(await fs.readFile(processedPath, "utf8")) as {
-      chunks?: Array<Record<string, unknown>>;
-    };
+    let parsed: { chunks?: Array<Record<string, unknown>> };
+
+    try {
+      parsed = JSON.parse(await fs.readFile(processedPath, "utf8")) as {
+        chunks?: Array<Record<string, unknown>>;
+      };
+    } catch (error: unknown) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
+        throw error;
+      }
+
+      const reviewedPath = path.join(
+        projectRoot,
+        "knowledge",
+        "processed",
+        "reviewed_documents.json",
+      );
+      const reviewed = JSON.parse(await fs.readFile(reviewedPath, "utf8")) as {
+        chunks?: Array<Record<string, unknown> & { source_file?: string }>;
+      };
+      parsed = {
+        chunks: (reviewed.chunks ?? []).filter(
+          (chunk) => path.basename(chunk.source_file ?? "") === body.fileName,
+        ),
+      };
+    }
     if (!Array.isArray(parsed.chunks)) throw new Error("The trained file data is invalid.");
 
-    const content = body.content.trim();
+    const question = body.question.trim();
+    const assistantAnswer = body.assistantAnswer.trim();
+    const correctedAnswer = body.correctedAnswer.trim();
+    const content = `Question: ${question}\n\nCorrect answer: ${correctedAnswer}`;
+    const feedbackRecord = [
+      `Question: ${question}`,
+      `Assistant answered: ${assistantAnswer}`,
+      `Teacher's improved answer: ${correctedAnswer}`,
+    ].join("\n\n");
     const id = `researcher-correction-${createHash("sha256")
       .update(`${body.fileName}\n${content}`)
       .digest("hex")
@@ -92,6 +131,9 @@ export async function POST(request: Request) {
           metadata: {
             researcher_upload: true,
             researcher_correction: true,
+            tested_question: question,
+            assistant_answer: assistantAnswer,
+            corrected_answer: correctedAnswer,
             corrected_at: new Date().toISOString(),
           },
         },
@@ -122,11 +164,11 @@ export async function POST(request: Request) {
     await fs.rename(temporaryPath, processedPath);
     temporaryPath = "";
 
-    await updateResearcherManifest(body.fileName, "trained", content);
+    await updateResearcherManifest(body.fileName, "trained", feedbackRecord);
 
     return Response.json({
       success: true,
-      message: "The correction was saved and the file was retrained.",
+      message: "The improved answer was saved and the file was retrained.",
     });
   } catch (error: unknown) {
     console.error("Researcher correction failed:", error);

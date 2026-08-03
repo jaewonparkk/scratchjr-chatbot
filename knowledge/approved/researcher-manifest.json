@@ -1,5 +1,13 @@
 {
   "version": 1,
-  "updatedAt": "2026-08-03T17:34:35.049Z",
-  "files": []
+  "updatedAt": "2026-08-03T17:55:40.486Z",
+  "files": [
+    {
+      "fileName": "Building Steps.pdf",
+      "status": "untrained",
+      "trainedAt": "2026-08-03T17:55:06.614Z",
+      "updatedAt": "2026-08-03T17:55:40.486Z",
+      "corrections": []
+    }
+  ]
 }

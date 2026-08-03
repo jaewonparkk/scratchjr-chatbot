@@ -74,6 +74,42 @@
     line-height: 1.45;
   }
 
+  .researcherViewTabs {
+    display: flex;
+    width: fit-content;
+    padding: 4px;
+    background: #f5ead8;
+    border-radius: 11px;
+  }
+
+  .researcherViewTabs button {
+    padding: 9px 15px;
+    color: #6f6252;
+    background: transparent;
+    border: 0;
+    border-radius: 8px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 750;
+    cursor: pointer;
+  }
+
+  .researcherViewTabs .activeResearcherView {
+    color: #8a4b00;
+    background: #ffffff;
+    box-shadow: 0 1px 4px rgb(77 54 20 / 12%);
+  }
+
+  .researcherPanel {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  .researcherPanel[hidden] {
+    display: none;
+  }
+
   .uploadButton {
     display: flex;
     align-items: center;
@@ -407,6 +443,92 @@
     cursor: not-allowed;
   }
 
+  .feedbackEditor {
+    display: grid;
+    width: min(760px, 100%);
+    gap: 14px;
+    padding: 18px;
+    background: #ffffff;
+    border: 1px solid #ead9bd;
+    border-radius: 14px;
+  }
+
+  .feedbackHeading h3 {
+    margin: 5px 0 4px;
+    font-size: 17px;
+  }
+
+  .feedbackHeading p {
+    font-size: 12px;
+  }
+
+  .feedbackStep {
+    color: #b65f00;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+  }
+
+  .feedbackEditor label {
+    display: grid;
+    gap: 6px;
+    color: #4f4031;
+    font-size: 12px;
+    font-weight: 750;
+  }
+
+  .feedbackEditor textarea {
+    min-height: 78px;
+    resize: vertical;
+    padding: 11px 12px;
+    color: #302a24;
+    background: #ffffff;
+    border: 1px solid #d7c4a5;
+    border-radius: 9px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.45;
+  }
+
+  .feedbackEditor textarea[readonly] {
+    color: #655b51;
+    background: #f8f5ef;
+  }
+
+  .feedbackActions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding-top: 3px;
+  }
+
+  .feedbackActions span {
+    color: #74572e;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .feedbackActions button {
+    flex: 0 0 auto;
+    padding: 10px 13px;
+    color: #ffffff;
+    background: #b65f00;
+    border: 0;
+    border-radius: 8px;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 750;
+    cursor: pointer;
+  }
+
+  .feedbackActions button:disabled {
+    background: #cdbb9e;
+    cursor: not-allowed;
+  }
+
   .pipelineNote {
     display: grid;
     gap: 7px;
@@ -479,6 +601,7 @@
     max-width: 84%;
     padding: 15px 18px;
     border-radius: 20px;
+    font-family: Arial, Helvetica, sans-serif;
     font-size: 18px;
     line-height: 1.65;
   }

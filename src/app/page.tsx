@@ -132,6 +132,9 @@ export default function Home() {
       "assistant",
     );
 
+  const [researcherView, setResearcherView] =
+    useState<"files" | "improve">("files");
+
   const [researcherFiles, setResearcherFiles] =
     useState<ResearcherFile[]>([]);
 
@@ -161,6 +164,12 @@ export default function Home() {
 
   const [isSavingCorrection, setIsSavingCorrection] =
     useState(false);
+
+  const [latestFeedback, setLatestFeedback] =
+    useState<{ question: string; answer: string } | null>(null);
+
+  const [desiredAnswer, setDesiredAnswer] =
+    useState("");
 
   const messagesEndRef =
     useRef<HTMLDivElement | null>(
@@ -363,6 +372,8 @@ export default function Home() {
       if (selectedResearcherFile === fileName) {
         setSelectedResearcherFile("");
         setResearcherMessages([]);
+        setLatestFeedback(null);
+        setDesiredAnswer("");
       }
       setUploadMessage(`${fileName} was permanently deleted.`);
     } catch (error: unknown) {
@@ -371,14 +382,16 @@ export default function Home() {
   }
 
   async function saveLatestCorrection() {
-    const latestUserMessage = [...researcherMessages]
-      .reverse()
-      .find((message) => message.role === "user");
-
-    if (!selectedResearcherFile || !latestUserMessage || isSavingCorrection) return;
+    const correction = desiredAnswer.trim();
+    if (
+      !selectedResearcherFile ||
+      !latestFeedback ||
+      correction.length < 10 ||
+      isSavingCorrection
+    ) return;
 
     if (!window.confirm(
-      `Save your latest message as a correction to ${selectedResearcherFile} and retrain the assistant?`,
+      `Save this improved answer to ${selectedResearcherFile} and retrain the assistant?\n\nThe tested question, the assistant's answer, and your corrected answer will be kept together.`,
     )) return;
 
     setIsSavingCorrection(true);
@@ -395,7 +408,9 @@ export default function Home() {
         body: JSON.stringify({
           fileName: selectedResearcherFile,
           filePath: file.id,
-          content: latestUserMessage.text,
+          question: latestFeedback.question,
+          assistantAnswer: latestFeedback.answer,
+          correctedAnswer: correction,
         }),
       });
       const data = (await response.json()) as { message?: string; error?: string };
@@ -411,8 +426,9 @@ export default function Home() {
       );
       setResearcherMessages((messages) => [
         ...messages,
-        { role: "assistant", text: "Your correction was saved and the assistant was retrained." },
+        { role: "assistant", text: "Your improved answer was saved and the assistant was retrained." },
       ]);
+      setDesiredAnswer("");
     } catch (error: unknown) {
       setUploadError(error instanceof Error ? error.message : "Could not save the correction.");
     } finally {
@@ -439,6 +455,8 @@ export default function Home() {
       const data = (await response.json()) as { answer?: string; error?: string };
       if (!response.ok || !data.answer) throw new Error(data.error ?? "Could not check the file.");
       setResearcherMessages((messages) => [...messages, { role: "assistant", text: data.answer as string }]);
+      setLatestFeedback({ question, answer: data.answer });
+      setDesiredAnswer("");
     } catch (error: unknown) {
       setResearcherMessages((messages) => [...messages, {
         role: "assistant",
@@ -660,10 +678,33 @@ export default function Home() {
             <h2>Researcher</h2>
 
             <p>
-              Train the assistant with a new
-              classroom file.
+              Manage classroom files and improve
+              answers with teacher feedback.
             </p>
           </div>
+
+          <div className={styles.researcherViewTabs} role="tablist" aria-label="Researcher tools">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={researcherView === "files"}
+              className={researcherView === "files" ? styles.activeResearcherView : undefined}
+              onClick={() => { setResearcherView("files"); }}
+            >
+              Files
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={researcherView === "improve"}
+              className={researcherView === "improve" ? styles.activeResearcherView : undefined}
+              onClick={() => { setResearcherView("improve"); }}
+            >
+              Improve answers
+            </button>
+          </div>
+
+          <div className={styles.researcherPanel} hidden={researcherView !== "files"}>
 
           <label className={styles.uploadButton}>
             {isUploading
@@ -764,6 +805,26 @@ export default function Home() {
             </div>
           </details>
 
+          <div className={styles.pipelineNote}>
+            <strong>No terminal needed</strong>
+            <span>Select Train and the server will process and index the file automatically.</span>
+          </div>
+          </div>
+
+          <div className={styles.researcherPanel} hidden={researcherView !== "improve"}>
+
+          {uploadMessage ? (
+            <p className={styles.uploadSuccess}>
+              {uploadMessage}
+            </p>
+          ) : null}
+
+          {uploadError ? (
+            <p className={styles.uploadError}>
+              {uploadError}
+            </p>
+          ) : null}
+
           <section className={styles.researcherChat}>
             <div className={styles.researcherChatHeader}>
               <div>
@@ -775,6 +836,8 @@ export default function Home() {
                 onChange={(event) => {
                   setSelectedResearcherFile(event.target.value);
                   setResearcherMessages([]);
+                  setLatestFeedback(null);
+                  setDesiredAnswer("");
                 }}
               >
                 <option value="">Choose a file</option>
@@ -814,27 +877,59 @@ export default function Home() {
               </button>
             </form>
 
-            <div className={styles.correctionBar}>
-              <span>
-                Adds your latest teacher message to the selected file, then retrains the assistant.
-              </span>
+          </section>
+
+          <section className={styles.feedbackEditor}>
+            <div className={styles.feedbackHeading}>
+              <span className={styles.feedbackStep}>Teacher feedback</span>
+              <h3>How should the assistant answer instead?</h3>
+              <p>Test an answer above, then write the response you want teachers to receive.</p>
+            </div>
+
+            <label>
+              Question tested
+              <textarea
+                value={latestFeedback?.question ?? ""}
+                placeholder="Ask a question in the chat above first."
+                readOnly
+              />
+            </label>
+
+            <label>
+              Assistant answered
+              <textarea
+                value={latestFeedback?.answer ?? ""}
+                placeholder="The assistant's latest answer will appear here."
+                readOnly
+              />
+            </label>
+
+            <label>
+              I want it to answer
+              <textarea
+                value={desiredAnswer}
+                onChange={(event) => { setDesiredAnswer(event.target.value); }}
+                placeholder="Write the complete, correct answer here."
+                disabled={!latestFeedback || isSavingCorrection}
+              />
+            </label>
+
+            <div className={styles.feedbackActions}>
+              <span>This saves the feedback with the selected file and retrains its knowledge.</span>
               <button
                 type="button"
                 disabled={
                   !selectedResearcherFile ||
-                  isSavingCorrection ||
-                  !researcherMessages.some((message) => message.role === "user")
+                  !latestFeedback ||
+                  desiredAnswer.trim().length < 10 ||
+                  isSavingCorrection
                 }
                 onClick={() => { void saveLatestCorrection(); }}
               >
-                {isSavingCorrection ? "Teaching..." : "Teach this correction"}
+                {isSavingCorrection ? "Saving & retraining..." : "Save improved answer & retrain"}
               </button>
             </div>
           </section>
-
-          <div className={styles.pipelineNote}>
-            <strong>No terminal needed</strong>
-            <span>Select Train and the server will process and index the file automatically.</span>
           </div>
         </section>
         ) : (
