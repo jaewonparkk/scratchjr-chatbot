@@ -52,7 +52,7 @@
     gap: 18px;
     min-height: 760px;
     padding: 34px;
-    background: #eef3f6;
+    background: #fffdf8;
   }
 
   .eyebrow {
@@ -149,6 +149,11 @@
     gap: 3px;
   }
 
+  .fileActions {
+    display: flex;
+    gap: 7px;
+  }
+
   .researcherFile strong {
     overflow: hidden;
     font-size: 13px;
@@ -179,12 +184,177 @@
     cursor: wait;
   }
 
+  .cancelButton {
+    padding: 8px 11px;
+    color: #8c3e2f;
+    background: #ffffff;
+    border: 1px solid #dba99e;
+    border-radius: 7px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .cancelButton:hover:not(:disabled) {
+    background: #fff0ec;
+  }
+
+  .cancelButton:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .researcherChat {
+    display: grid;
+    width: min(760px, 100%);
+    overflow: hidden;
+    background: #ffffff;
+    border: 1px solid #ead9bd;
+    border-radius: 14px;
+  }
+
+  .researcherChatHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 16px;
+    border-bottom: 1px solid #f0e3ce;
+  }
+
+  .researcherChatHeader h3 {
+    margin: 0 0 3px;
+    font-size: 16px;
+  }
+
+  .researcherChatHeader p {
+    font-size: 12px;
+  }
+
+  .researcherChatHeader select {
+    max-width: 280px;
+    padding: 9px 10px;
+    background: #ffffff;
+    border: 1px solid #d7c4a5;
+    border-radius: 8px;
+  }
+
+  .researcherChatMessages {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    min-height: 210px;
+    max-height: 420px;
+    padding: 16px;
+    overflow-y: auto;
+    background: #fffaf1;
+  }
+
+  .researcherChatEmpty {
+    margin: auto !important;
+    color: #8a7660 !important;
+    font-size: 13px;
+    text-align: center;
+  }
+
+  .researcherUserMessage,
+  .researcherAssistantMessage {
+    max-width: 86%;
+    padding: 10px 13px;
+    border-radius: 14px;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+
+  .researcherUserMessage {
+    align-self: flex-end;
+    color: #ffffff;
+    background: #f59e0b;
+    border-bottom-right-radius: 4px;
+  }
+
+  .researcherAssistantMessage {
+    align-self: flex-start;
+    color: #3d3024;
+    background: #ffffff;
+    border: 1px solid #edc881;
+    border-bottom-left-radius: 4px;
+  }
+
+  .researcherChatForm {
+    display: flex;
+    gap: 8px;
+    padding: 12px;
+    border-top: 1px solid #f0e3ce;
+  }
+
+  .researcherChatForm input {
+    flex: 1;
+    min-width: 0;
+    padding: 10px 12px;
+    border: 1px solid #d7c4a5;
+    border-radius: 8px;
+    font: inherit;
+  }
+
+  .researcherChatForm button {
+    padding: 10px 15px;
+    color: #ffffff;
+    background: #f59e0b;
+    border: 0;
+    border-radius: 8px;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .researcherChatForm button:disabled {
+    background: #d7c7af;
+    cursor: not-allowed;
+  }
+
+  .correctionBar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 12px;
+    background: #fff4dc;
+    border-top: 1px solid #f0d39a;
+  }
+
+  .correctionBar span {
+    color: #74572e;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+
+  .correctionBar button {
+    flex: 0 0 auto;
+    padding: 9px 12px;
+    color: #ffffff;
+    background: #b65f00;
+    border: 0;
+    border-radius: 7px;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 750;
+    cursor: pointer;
+  }
+
+  .correctionBar button:disabled {
+    background: #cdbb9e;
+    cursor: not-allowed;
+  }
+
   .pipelineNote {
     display: grid;
     gap: 7px;
     margin-top: auto;
     padding: 13px;
-    background: #dfe9ef;
+    background: #fff1d6;
     border-radius: 9px;
     font-size: 12px;
     width: min(640px, 100%);

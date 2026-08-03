@@ -58,6 +58,11 @@ type ResearcherFile = {
   savedAt: string;
 };
 
+type ResearcherMessage = {
+  role: "user" | "assistant";
+  text: string;
+};
+
 function createMessageId(): string {
   return [
     Date.now(),
@@ -138,6 +143,21 @@ export default function Home() {
 
   const [trainingFile, setTrainingFile] =
     useState<string | null>(null);
+
+  const [selectedResearcherFile, setSelectedResearcherFile] =
+    useState("");
+
+  const [researcherQuestion, setResearcherQuestion] =
+    useState("");
+
+  const [researcherMessages, setResearcherMessages] =
+    useState<ResearcherMessage[]>([]);
+
+  const [isCheckingFile, setIsCheckingFile] =
+    useState(false);
+
+  const [isSavingCorrection, setIsSavingCorrection] =
+    useState(false);
 
   const messagesEndRef =
     useRef<HTMLDivElement | null>(
@@ -266,10 +286,107 @@ export default function Home() {
       const data = (await response.json()) as { message?: string; error?: string };
       if (!response.ok) throw new Error(data.error ?? "Training failed.");
       setUploadMessage(`${fileName} is now available to the assistant.`);
+      setSelectedResearcherFile(fileName);
     } catch (error: unknown) {
       setUploadError(error instanceof Error ? error.message : "Training failed.");
     } finally {
       setTrainingFile(null);
+    }
+  }
+
+  async function cancelResearchFile(fileName: string) {
+    if (!window.confirm(
+      `Permanently delete ${fileName}?\n\nThis will remove the original file, extracted content, saved corrections, and all trained data. This cannot be undone.`,
+    )) return;
+
+    setUploadMessage("");
+    setUploadError("");
+
+    try {
+      const response = await fetch("/api/researcher/files", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName }),
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Could not remove the file.");
+
+      setResearcherFiles((files) => files.filter((file) => file.name !== fileName));
+      if (selectedResearcherFile === fileName) {
+        setSelectedResearcherFile("");
+        setResearcherMessages([]);
+      }
+      setUploadMessage(`${fileName} and its trained data were removed.`);
+    } catch (error: unknown) {
+      setUploadError(error instanceof Error ? error.message : "Could not remove the file.");
+    }
+  }
+
+  async function saveLatestCorrection() {
+    const latestUserMessage = [...researcherMessages]
+      .reverse()
+      .find((message) => message.role === "user");
+
+    if (!selectedResearcherFile || !latestUserMessage || isSavingCorrection) return;
+
+    if (!window.confirm(
+      `Save your latest message as a correction to ${selectedResearcherFile} and retrain the assistant?`,
+    )) return;
+
+    setIsSavingCorrection(true);
+    setUploadMessage("");
+    setUploadError("");
+
+    try {
+      const response = await fetch("/api/researcher/corrections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fileName: selectedResearcherFile,
+          content: latestUserMessage.text,
+        }),
+      });
+      const data = (await response.json()) as { message?: string; error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Could not save the correction.");
+
+      setUploadMessage(data.message ?? "Correction saved and retrained.");
+      setResearcherMessages((messages) => [
+        ...messages,
+        { role: "assistant", text: "Your correction was saved and the assistant was retrained." },
+      ]);
+    } catch (error: unknown) {
+      setUploadError(error instanceof Error ? error.message : "Could not save the correction.");
+    } finally {
+      setIsSavingCorrection(false);
+    }
+  }
+
+  async function checkResearchFile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const question = researcherQuestion.trim();
+    if (!question || !selectedResearcherFile || isCheckingFile) return;
+
+    const history = researcherMessages;
+    setResearcherMessages((messages) => [...messages, { role: "user", text: question }]);
+    setResearcherQuestion("");
+    setIsCheckingFile(true);
+
+    try {
+      const response = await fetch("/api/researcher/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName: selectedResearcherFile, question, history }),
+      });
+      const data = (await response.json()) as { answer?: string; error?: string };
+      if (!response.ok || !data.answer) throw new Error(data.error ?? "Could not check the file.");
+      setResearcherMessages((messages) => [...messages, { role: "assistant", text: data.answer as string }]);
+    } catch (error: unknown) {
+      setResearcherMessages((messages) => [...messages, {
+        role: "assistant",
+        text: error instanceof Error ? error.message : "Could not check the file.",
+      }]);
+    } finally {
+      setIsCheckingFile(false);
     }
   }
 
@@ -537,18 +654,94 @@ export default function Home() {
                       {(file.size / 1024 / 1024).toFixed(1)} MB
                     </span>
                   </div>
-                  <button
-                    type="button"
-                    className={styles.trainButton}
-                    disabled={trainingFile !== null}
-                    onClick={() => { void trainResearchFile(file.name); }}
-                  >
-                    {trainingFile === file.name ? "Training..." : "Train"}
-                  </button>
+                  <div className={styles.fileActions}>
+                    <button
+                      type="button"
+                      className={styles.trainButton}
+                      disabled={trainingFile !== null}
+                      onClick={() => { void trainResearchFile(file.name); }}
+                    >
+                      {trainingFile === file.name ? "Training..." : "Train"}
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.cancelButton}
+                      disabled={trainingFile !== null}
+                      onClick={() => { void cancelResearchFile(file.name); }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
               ))
             )}
           </div>
+
+          <section className={styles.researcherChat}>
+            <div className={styles.researcherChatHeader}>
+              <div>
+                <h3>Check the training</h3>
+                <p>Ask questions using only one trained file.</p>
+              </div>
+              <select
+                value={selectedResearcherFile}
+                onChange={(event) => {
+                  setSelectedResearcherFile(event.target.value);
+                  setResearcherMessages([]);
+                }}
+              >
+                <option value="">Choose a file</option>
+                {researcherFiles.map((file) => (
+                  <option key={file.name} value={file.name}>{file.name}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className={styles.researcherChatMessages}>
+              {researcherMessages.length === 0 ? (
+                <p className={styles.researcherChatEmpty}>
+                  Select a trained file, then ask for a summary or walkthrough.
+                </p>
+              ) : researcherMessages.map((message, index) => (
+                <div
+                  key={`${message.role}-${index}`}
+                  className={message.role === "user" ? styles.researcherUserMessage : styles.researcherAssistantMessage}
+                >
+                  {message.text}
+                </div>
+              ))}
+              {isCheckingFile ? <div className={styles.researcherAssistantMessage}>Checking the full file...</div> : null}
+            </div>
+
+            <form className={styles.researcherChatForm} onSubmit={checkResearchFile}>
+              <input
+                value={researcherQuestion}
+                onChange={(event) => { setResearcherQuestion(event.target.value); }}
+                placeholder="Did the training capture every step?"
+                disabled={!selectedResearcherFile || isCheckingFile}
+              />
+              <button type="submit" disabled={!selectedResearcherFile || !researcherQuestion.trim() || isCheckingFile}>
+                Check
+              </button>
+            </form>
+
+            <div className={styles.correctionBar}>
+              <span>
+                If your latest message contains missing or corrected information, save it and retrain.
+              </span>
+              <button
+                type="button"
+                disabled={
+                  !selectedResearcherFile ||
+                  isSavingCorrection ||
+                  !researcherMessages.some((message) => message.role === "user")
+                }
+                onClick={() => { void saveLatestCorrection(); }}
+              >
+                {isSavingCorrection ? "Retraining..." : "Save correction & retrain"}
+              </button>
+            </div>
+          </section>
 
           <div className={styles.pipelineNote}>
             <strong>No terminal needed</strong>

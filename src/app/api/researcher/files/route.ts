@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -226,5 +227,58 @@ export async function POST(
       },
       { status: 500 },
     );
+  }
+}
+
+export async function DELETE(request: Request) {
+  try {
+    const body = (await request.json()) as { fileName?: unknown };
+    if (typeof body.fileName !== "string" || path.basename(body.fileName) !== body.fileName) {
+      return Response.json({ error: "Choose a valid saved file." }, { status: 400 });
+    }
+
+    const rawPath = path.join(uploadDirectory, body.fileName);
+    const processedPath = path.join(
+      process.cwd(),
+      "knowledge",
+      "processed",
+      "researcher",
+      `${path.parse(body.fileName).name}.json`,
+    );
+
+    let chunkIds: string[] = [];
+    let imagePaths: string[] = [];
+
+    try {
+      const parsed = JSON.parse(await fs.readFile(processedPath, "utf8")) as {
+        chunks?: Array<{ id?: unknown; image_paths?: unknown }>;
+      };
+      const chunks = Array.isArray(parsed.chunks) ? parsed.chunks : [];
+      chunkIds = chunks.map((chunk) => chunk.id).filter((id): id is string => typeof id === "string");
+      imagePaths = chunks.flatMap((chunk) => Array.isArray(chunk.image_paths) ? chunk.image_paths : []).filter((item): item is string => typeof item === "string");
+    } catch (error: unknown) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    }
+
+    if (chunkIds.length > 0) {
+      const { error } = await supabaseAdmin.from("documents").delete().in("chunk_id", chunkIds);
+      if (error) throw new Error(`Could not remove trained chunks: ${error.message}`);
+    }
+
+    const allowedImages = path.resolve(process.cwd(), "knowledge", "processed", "images", "researcher");
+    for (const imagePath of new Set(imagePaths)) {
+      const absoluteImage = path.resolve(process.cwd(), imagePath);
+      if (!path.relative(allowedImages, absoluteImage).startsWith("..")) {
+        await fs.rm(absoluteImage, { force: true });
+      }
+    }
+
+    await fs.rm(processedPath, { force: true });
+    await fs.rm(rawPath, { force: true });
+
+    return Response.json({ success: true });
+  } catch (error: unknown) {
+    console.error("Could not cancel Researcher file:", error);
+    return Response.json({ error: "Could not remove the file and its trained data." }, { status: 500 });
   }
 }

@@ -1,4 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 
 import {
   searchDocuments,
@@ -920,6 +922,58 @@ async function retrieveFullGuide(
   });
 }
 
+async function retrieveNamedResearcherFile(
+  question: string,
+): Promise<SearchResult[] | null> {
+  const directory = path.join(
+    process.cwd(),
+    "knowledge",
+    "processed",
+    "researcher",
+  );
+
+  let names: string[];
+  try {
+    names = await fs.readdir(directory);
+  } catch {
+    return null;
+  }
+
+  const normalizedQuestion = question.toLowerCase();
+  const matchedName = names.find((name) => {
+    if (!name.endsWith(".json")) return false;
+    const stem = path.parse(name).name.toLowerCase();
+    return normalizedQuestion.includes(stem) || normalizedQuestion.includes(`${stem}.pdf`);
+  });
+
+  if (!matchedName) return null;
+
+  const parsed = JSON.parse(
+    await fs.readFile(path.join(directory, matchedName), "utf8"),
+  ) as { chunks?: Array<Partial<SearchResult>> };
+
+  if (!Array.isArray(parsed.chunks)) return null;
+
+  return parsed.chunks
+    .map((chunk, index): SearchResult => ({
+      id: Number(chunk.id ?? index),
+      chunk_id: typeof chunk.chunk_id === "string" ? chunk.chunk_id : String(chunk.id ?? index),
+      title: typeof chunk.title === "string" ? chunk.title : path.parse(matchedName).name,
+      content: typeof chunk.content === "string" ? chunk.content : "",
+      source_file: typeof chunk.source_file === "string" ? chunk.source_file : matchedName,
+      file_type: chunk.file_type === "docx" || chunk.file_type === "pptx" || chunk.file_type === "image" ? chunk.file_type : "pdf",
+      section: typeof chunk.section === "string" ? chunk.section : "",
+      page_number: typeof chunk.page_number === "number" ? chunk.page_number : null,
+      slide_number: typeof chunk.slide_number === "number" ? chunk.slide_number : null,
+      image_paths: Array.isArray(chunk.image_paths) ? chunk.image_paths : [],
+      should_display_image: Boolean(chunk.should_display_image),
+      metadata: typeof chunk.metadata === "object" && chunk.metadata ? chunk.metadata : {},
+      similarity: 1,
+    }))
+    .filter((chunk) => chunk.content)
+    .sort((a, b) => (a.page_number ?? a.slide_number ?? 9999) - (b.page_number ?? b.slide_number ?? 9999));
+}
+
 async function generateAnswer(
   question: string,
   history: ChatHistoryMessage[],
@@ -1092,7 +1146,17 @@ export async function POST(
         history,
       );
 
+    const namedResearcherResults =
+      await retrieveNamedResearcherFile(
+        retrievalQuestion,
+      );
+
     if (
+      namedResearcherResults &&
+      namedResearcherResults.length > 0
+    ) {
+      results = namedResearcherResults;
+    } else if (
       intent.wantsFullGuide &&
       intent.topic !== null
     ) {
