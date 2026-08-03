@@ -7,9 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "render-pdfs": "tsx scripts/render-pdfs.ts",
-    "process-pdfs": "tsx scripts/process-pdfs.ts",
-    "upload-embeddings": "tsx scripts/upload-embeddings.ts"
+    "ingest-pdfs": "tsx scripts/ingest-pdfs.ts",
+    "upload-embeddings": "tsx scripts/upload-embeddings.ts",
+    "ingest": "npm run ingest-pdfs && npm run upload-embeddings"
   },
   "dependencies": {
     "@google/genai": "^2.13.0",
