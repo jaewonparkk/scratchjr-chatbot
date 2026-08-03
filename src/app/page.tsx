@@ -582,6 +582,14 @@ export default function Home() {
                     : styles.assistantRow,
                 ].join(" ")}
               >
+                {message.role === "assistant" ? (
+                  <img
+                    src="/scratchjr-cat.png"
+                    alt="ScratchJr cat"
+                    className={styles.catAvatar}
+                  />
+                ) : null}
+
                 <div
                   className={[
                     styles.message,
@@ -713,6 +721,13 @@ export default function Home() {
                 styles.assistantRow,
               ].join(" ")}
             >
+              <img
+                src="/scratchjr-cat.png"
+                alt=""
+                aria-hidden="true"
+                className={styles.catAvatar}
+              />
+
               <div
                 className={[
                   styles.message,

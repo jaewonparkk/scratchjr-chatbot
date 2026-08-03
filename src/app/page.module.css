@@ -37,13 +37,13 @@
   }
 
   .tab:hover {
-    color: #245477;
-    background: #f4f7f9;
+    color: #b65f00;
+    background: #fff7e6;
   }
 
   .activeTab {
-    color: #245477;
-    border-bottom-color: #245477;
+    color: #b65f00;
+    border-bottom-color: #f59e0b;
   }
 
   .researcher {
@@ -56,7 +56,7 @@
   }
 
   .eyebrow {
-    color: #527087;
+    color: #b65f00;
     font-size: 12px;
     font-weight: 750;
     letter-spacing: 0.08em;
@@ -81,7 +81,7 @@
     min-height: 48px;
     padding: 10px 16px;
     color: #ffffff;
-    background: #245477;
+    background: #f59e0b;
     border-radius: 10px;
     font-weight: 700;
     cursor: pointer;
@@ -89,7 +89,7 @@
   }
 
   .uploadButton:hover {
-    background: #193f5d;
+    background: #dc7b06;
   }
 
   .uploadButton input {
@@ -165,7 +165,7 @@
   .trainButton {
     padding: 8px 13px;
     color: #ffffff;
-    background: #245477;
+    background: #f59e0b;
     border: 0;
     border-radius: 7px;
     font: inherit;
@@ -192,7 +192,7 @@
 
   .pipelineNote code {
     overflow-wrap: anywhere;
-    color: #183e59;
+    color: #9a5000;
   }
 
   .pipelineNote span {
@@ -233,6 +233,8 @@
   
   .messageRow {
     display: flex;
+    align-items: flex-start;
+    gap: 10px;
     width: 100%;
     margin-bottom: 16px;
   }
@@ -248,20 +250,50 @@
   .message {
     max-width: 84%;
     padding: 15px 18px;
-    border-radius: 12px;
+    border-radius: 20px;
     font-size: 18px;
     line-height: 1.65;
   }
   
   .userMessage {
     color: #ffffff;
-    background: #245477;
+    background: #f59e0b;
+    border-bottom-right-radius: 6px;
   }
   
   .assistantMessage {
+    position: relative;
     color: #202020;
-    background: #f2f2f2;
-    border: 1px solid #dcdcdc;
+    background: #fff8e8;
+    border: 2px solid #f3c16b;
+    border-bottom-left-radius: 7px;
+    box-shadow: 0 3px 0 rgba(179, 99, 0, 0.08);
+  }
+
+  .assistantMessage::before {
+    position: absolute;
+    bottom: 12px;
+    left: -10px;
+    width: 18px;
+    height: 18px;
+    content: "";
+    background: #fff8e8;
+    border-bottom: 2px solid #f3c16b;
+    border-left: 2px solid #f3c16b;
+    transform: rotate(45deg);
+  }
+
+  .catAvatar {
+    position: relative;
+    z-index: 1;
+    flex: 0 0 auto;
+    width: 58px;
+    height: 58px;
+    margin-top: 3px;
+    object-fit: contain;
+    background: #ffffff;
+    border: 3px solid #f59e0b;
+    border-radius: 50%;
   }
   
   .messageText {
@@ -369,14 +401,15 @@
   }
   
   .input:focus {
-    border-color: #245477;
+    border-color: #f59e0b;
+    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.16);
   }
   
   .button {
     min-width: 96px;
     padding: 14px 18px;
     color: #ffffff;
-    background: #245477;
+    background: #f59e0b;
     border: 0;
     border-radius: 12px;
     font: inherit;
@@ -389,7 +422,7 @@
   }
 
   .button:hover:not(:disabled) {
-    background: #193f5d;
+    background: #dc7b06;
   }
 
   .button:active:not(:disabled) {
