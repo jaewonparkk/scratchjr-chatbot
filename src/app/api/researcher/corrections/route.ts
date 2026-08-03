@@ -4,6 +4,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { updateResearcherManifest } from "@/lib/researcher/manifest";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -15,12 +17,14 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
       fileName?: unknown;
+      filePath?: unknown;
       content?: unknown;
     };
 
     if (
       typeof body.fileName !== "string" ||
       path.basename(body.fileName) !== body.fileName ||
+      typeof body.filePath !== "string" ||
       typeof body.content !== "string" ||
       body.content.trim().length < 10 ||
       body.content.trim().length > 10_000
@@ -32,6 +36,17 @@ export async function POST(request: Request) {
     }
 
     const projectRoot = process.cwd();
+    const absoluteSource = path.resolve(projectRoot, body.filePath);
+    const allowedRoots = [
+      path.resolve(projectRoot, "knowledge", "raw", "researcher"),
+      path.resolve(projectRoot, "knowledge", "raw", "microbit"),
+    ];
+    if (!allowedRoots.some((root) => {
+      const relative = path.relative(root, absoluteSource);
+      return !relative.startsWith("..") && !path.isAbsolute(relative);
+    })) {
+      return Response.json({ error: "That file is outside the active library." }, { status: 403 });
+    }
     const processedDirectory = path.join(
       projectRoot,
       "knowledge",
@@ -55,7 +70,7 @@ export async function POST(request: Request) {
       .slice(0, 24)}`;
 
     const withoutDuplicate = parsed.chunks.filter((chunk) => chunk.id !== id);
-    const sourceFile = `knowledge/raw/researcher/${body.fileName}`;
+    const sourceFile = path.relative(projectRoot, absoluteSource);
     const corrected = {
       chunks: [
         ...withoutDuplicate,
@@ -106,6 +121,8 @@ export async function POST(request: Request) {
 
     await fs.rename(temporaryPath, processedPath);
     temporaryPath = "";
+
+    await updateResearcherManifest(body.fileName, "trained", content);
 
     return Response.json({
       success: true,

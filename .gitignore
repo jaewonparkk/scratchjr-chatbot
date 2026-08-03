@@ -48,6 +48,8 @@ __pycache__/
 # Internal knowledge documents and generated output
 knowledge/raw/*
 !knowledge/raw/.gitkeep
+!knowledge/raw/researcher/
+!knowledge/raw/researcher/**
 
 knowledge/processed/*
 !knowledge/processed/.gitkeep

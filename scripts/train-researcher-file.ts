@@ -69,6 +69,30 @@ async function main(): Promise<void> {
     if (error) throw new Error(error.message);
   }
 
+  const currentIds = new Set(rows.map((row) => String(row.chunk_id)));
+  const trainedFileNames = new Set(
+    rows.map((row) => path.basename(String(row.source_file))),
+  );
+  const { data: existingRows, error: lookupError } = await supabase
+    .from("documents")
+    .select("chunk_id, source_file");
+  if (lookupError) throw new Error(lookupError.message);
+
+  const staleIds = (existingRows ?? [])
+    .filter((row) =>
+      trainedFileNames.has(path.basename(String(row.source_file ?? ""))) &&
+      !currentIds.has(String(row.chunk_id)),
+    )
+    .map((row) => String(row.chunk_id));
+
+  if (staleIds.length > 0) {
+    const { error } = await supabase
+      .from("documents")
+      .delete()
+      .in("chunk_id", staleIds);
+    if (error) throw new Error(error.message);
+  }
+
   console.log(`Trained ${rows.length} chunk(s).`);
 }
 

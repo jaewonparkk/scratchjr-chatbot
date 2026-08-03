@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 
+import { updateResearcherManifest } from "@/lib/researcher/manifest";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -98,19 +100,36 @@ function getPython(
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as { fileName?: unknown };
-    if (typeof body.fileName !== "string" || path.basename(body.fileName) !== body.fileName) {
+    const body = (await request.json()) as { fileName?: unknown; filePath?: unknown };
+    if (
+      typeof body.fileName !== "string" ||
+      path.basename(body.fileName) !== body.fileName ||
+      typeof body.filePath !== "string"
+    ) {
       return Response.json({ error: "Choose a valid saved file." }, { status: 400 });
     }
 
     const projectRoot = process.cwd();
+    const absoluteSource = path.resolve(projectRoot, body.filePath);
+    const allowedRoots = [
+      path.resolve(projectRoot, "knowledge", "raw", "researcher"),
+      path.resolve(projectRoot, "knowledge", "raw", "microbit"),
+    ];
+    const isAllowed = allowedRoots.some((root) => {
+      const relative = path.relative(root, absoluteSource);
+      return !relative.startsWith("..") && !path.isAbsolute(relative);
+    });
+    if (!isAllowed || path.basename(absoluteSource) !== body.fileName) {
+      return Response.json({ error: "That file is outside the active library." }, { status: 403 });
+    }
+
     const python = await getPython(
       projectRoot,
     );
 
     const parsed = await run(
       python,
-      ["-m", "ingestion.researcher_ingest", body.fileName],
+      ["-m", "ingestion.researcher_ingest", path.relative(projectRoot, absoluteSource)],
       { cwd: projectRoot, timeout: 5 * 60_000, maxBuffer: 2 * 1024 * 1024 },
     );
 
@@ -123,6 +142,7 @@ export async function POST(request: Request) {
       { cwd: projectRoot, timeout: 10 * 60_000, maxBuffer: 4 * 1024 * 1024 },
     );
 
+    await updateResearcherManifest(body.fileName, "trained");
     return Response.json({ success: true, message: trained.stdout.trim() || "Training complete." });
   } catch (error: unknown) {
     console.error("Researcher training failed:", error);

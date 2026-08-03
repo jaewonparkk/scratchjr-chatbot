@@ -53,9 +53,12 @@ type ChatApiResponse = {
 };
 
 type ResearcherFile = {
+  id: string;
   name: string;
   size: number;
   savedAt: string;
+  origin: "researcher" | "library";
+  status: "saved" | "trained" | "untrained" | "existing";
 };
 
 type ResearcherMessage = {
@@ -278,15 +281,25 @@ export default function Home() {
     setUploadError("");
 
     try {
+      const file = researcherFiles.find((item) => item.name === fileName);
+      if (!file) throw new Error("Could not find the selected file.");
+
       const response = await fetch("/api/researcher/train", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileName }),
+        body: JSON.stringify({ fileName, filePath: file.id }),
       });
       const data = (await response.json()) as { message?: string; error?: string };
       if (!response.ok) throw new Error(data.error ?? "Training failed.");
       setUploadMessage(`${fileName} is now available to the assistant.`);
       setSelectedResearcherFile(fileName);
+      setResearcherFiles((files) =>
+        files.map((file) =>
+          file.name === fileName
+            ? { ...file, status: "trained" }
+            : file,
+        ),
+      );
     } catch (error: unknown) {
       setUploadError(error instanceof Error ? error.message : "Training failed.");
     } finally {
@@ -294,9 +307,44 @@ export default function Home() {
     }
   }
 
-  async function cancelResearchFile(fileName: string) {
+  async function untrainResearchFile(fileName: string) {
     if (!window.confirm(
-      `Permanently delete ${fileName}?\n\nThis will remove the original file, extracted content, saved corrections, and all trained data. This cannot be undone.`,
+      `Cancel training for ${fileName}?\n\nThe original file will remain, but the assistant will stop using its trained chunks. You can train it again later.`,
+    )) return;
+
+    setUploadMessage("");
+    setUploadError("");
+
+    try {
+      const file = researcherFiles.find((item) => item.name === fileName);
+      if (!file) throw new Error("Could not find the selected file.");
+
+      const response = await fetch("/api/researcher/untrain", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName, filePath: file.id }),
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Could not untrain the file.");
+      setUploadMessage(`${fileName} was removed from the assistant. The original file was kept.`);
+      setResearcherFiles((files) =>
+        files.map((file) =>
+          file.name === fileName
+            ? { ...file, status: "untrained" }
+            : file,
+        ),
+      );
+    } catch (error: unknown) {
+      setUploadError(error instanceof Error ? error.message : "Could not untrain the file.");
+    }
+  }
+
+  async function deleteResearchFile(fileName: string) {
+    const file = researcherFiles.find((item) => item.name === fileName);
+    if (!file) return;
+
+    if (!window.confirm(
+      `Permanently delete ${fileName}?\n\nThis removes the original file, trained chunks, extracted content, saved corrections, and associated generated images. It will disappear from this UI and cannot be undone.`,
     )) return;
 
     setUploadMessage("");
@@ -306,19 +354,19 @@ export default function Home() {
       const response = await fetch("/api/researcher/files", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileName }),
+        body: JSON.stringify({ fileName, filePath: file.id }),
       });
       const data = (await response.json()) as { error?: string };
-      if (!response.ok) throw new Error(data.error ?? "Could not remove the file.");
+      if (!response.ok) throw new Error(data.error ?? "Could not permanently delete the file.");
 
-      setResearcherFiles((files) => files.filter((file) => file.name !== fileName));
+      setResearcherFiles((files) => files.filter((item) => item.name !== fileName));
       if (selectedResearcherFile === fileName) {
         setSelectedResearcherFile("");
         setResearcherMessages([]);
       }
-      setUploadMessage(`${fileName} and its trained data were removed.`);
+      setUploadMessage(`${fileName} was permanently deleted.`);
     } catch (error: unknown) {
-      setUploadError(error instanceof Error ? error.message : "Could not remove the file.");
+      setUploadError(error instanceof Error ? error.message : "Could not permanently delete the file.");
     }
   }
 
@@ -338,11 +386,15 @@ export default function Home() {
     setUploadError("");
 
     try {
+      const file = researcherFiles.find((item) => item.name === selectedResearcherFile);
+      if (!file) throw new Error("Could not find the selected file.");
+
       const response = await fetch("/api/researcher/corrections", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           fileName: selectedResearcherFile,
+          filePath: file.id,
           content: latestUserMessage.text,
         }),
       });
@@ -350,6 +402,13 @@ export default function Home() {
       if (!response.ok) throw new Error(data.error ?? "Could not save the correction.");
 
       setUploadMessage(data.message ?? "Correction saved and retrained.");
+      setResearcherFiles((files) =>
+        files.map((file) =>
+          file.name === selectedResearcherFile
+            ? { ...file, status: "trained" }
+            : file,
+        ),
+      );
       setResearcherMessages((messages) => [
         ...messages,
         { role: "assistant", text: "Your correction was saved and the assistant was retrained." },
@@ -635,9 +694,10 @@ export default function Home() {
             </p>
           ) : null}
 
-          <div className={styles.researcherFiles}>
-            <h3>Saved files</h3>
+          <details className={styles.researcherFiles}>
+            <summary>Files ({researcherFiles.length})</summary>
 
+            <div className={styles.researcherFileList}>
             {researcherFiles.length === 0 ? (
               <p className={styles.emptyFiles}>
                 No Researcher files yet.
@@ -651,31 +711,58 @@ export default function Home() {
                   <div className={styles.fileInfo}>
                     <strong>{file.name}</strong>
                     <span>
-                      {(file.size / 1024 / 1024).toFixed(1)} MB
+                      {(file.size / 1024 / 1024).toFixed(1)} MB · {file.status}
                     </span>
                   </div>
                   <div className={styles.fileActions}>
+                    <a
+                      className={styles.fileLink}
+                      href={`/api/researcher/content?path=${encodeURIComponent(file.id)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      View
+                    </a>
+                    <a
+                      className={styles.fileLink}
+                      href={`/api/researcher/content?path=${encodeURIComponent(file.id)}&download=1`}
+                    >
+                      Download
+                    </a>
                     <button
                       type="button"
                       className={styles.trainButton}
                       disabled={trainingFile !== null}
                       onClick={() => { void trainResearchFile(file.name); }}
                     >
-                      {trainingFile === file.name ? "Training..." : "Train"}
+                      {trainingFile === file.name
+                        ? "Training..."
+                        : file.status === "trained"
+                          ? "Retrain"
+                          : "Train"}
                     </button>
                     <button
                       type="button"
                       className={styles.cancelButton}
                       disabled={trainingFile !== null}
-                      onClick={() => { void cancelResearchFile(file.name); }}
+                      onClick={() => { void untrainResearchFile(file.name); }}
                     >
                       Cancel
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.deleteButton}
+                      disabled={trainingFile !== null}
+                      onClick={() => { void deleteResearchFile(file.name); }}
+                    >
+                      Delete
                     </button>
                   </div>
                 </div>
               ))
             )}
-          </div>
+            </div>
+          </details>
 
           <section className={styles.researcherChat}>
             <div className={styles.researcherChatHeader}>
@@ -691,7 +778,9 @@ export default function Home() {
                 }}
               >
                 <option value="">Choose a file</option>
-                {researcherFiles.map((file) => (
+                {researcherFiles.filter(
+                  (file) => file.status === "trained" || file.status === "existing",
+                ).map((file) => (
                   <option key={file.name} value={file.name}>{file.name}</option>
                 ))}
               </select>
@@ -727,7 +816,7 @@ export default function Home() {
 
             <div className={styles.correctionBar}>
               <span>
-                If your latest message contains missing or corrected information, save it and retrain.
+                Adds your latest teacher message to the selected file, then retrains the assistant.
               </span>
               <button
                 type="button"
@@ -738,7 +827,7 @@ export default function Home() {
                 }
                 onClick={() => { void saveLatestCorrection(); }}
               >
-                {isSavingCorrection ? "Retraining..." : "Save correction & retrain"}
+                {isSavingCorrection ? "Teaching..." : "Teach this correction"}
               </button>
             </div>
           </section>

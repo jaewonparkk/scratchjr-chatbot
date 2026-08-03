@@ -10,7 +10,10 @@ from ingestion.parsers import parse_docx, parse_image, parse_pdf, parse_pptx
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-UPLOAD_DIRECTORY = PROJECT_ROOT / "knowledge" / "raw" / "researcher"
+ALLOWED_DIRECTORIES = [
+    (PROJECT_ROOT / "knowledge" / "raw" / "researcher").resolve(),
+    (PROJECT_ROOT / "knowledge" / "raw" / "microbit").resolve(),
+]
 OUTPUT_DIRECTORY = PROJECT_ROOT / "knowledge" / "processed" / "researcher"
 IMAGE_DIRECTORY = PROJECT_ROOT / "knowledge" / "processed" / "images" / "researcher"
 
@@ -26,8 +29,12 @@ def main() -> None:
     if len(sys.argv) != 2:
         raise ValueError("A Researcher file name is required.")
 
-    source_path = (UPLOAD_DIRECTORY / Path(sys.argv[1]).name).resolve()
-    source_path.relative_to(UPLOAD_DIRECTORY.resolve())
+    source_path = (PROJECT_ROOT / sys.argv[1]).resolve()
+    if not any(
+        source_path.is_relative_to(directory)
+        for directory in ALLOWED_DIRECTORIES
+    ):
+        raise ValueError("The file is outside the active Researcher library.")
 
     if not source_path.is_file():
         raise FileNotFoundError("The uploaded Researcher file was not found.")

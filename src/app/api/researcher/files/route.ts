@@ -1,6 +1,10 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import {
+  getResearcherManifestEntries,
+  updateResearcherManifest,
+} from "@/lib/researcher/manifest";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,6 +32,37 @@ const uploadDirectory = path.join(
   "raw",
   "researcher",
 );
+
+const libraryDirectories = [
+  path.join(process.cwd(), "knowledge", "raw", "microbit"),
+];
+
+async function listDirectory(
+  directory: string,
+  origin: "researcher" | "library",
+) {
+  try {
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    return Promise.all(
+      entries
+        .filter((entry) => entry.isFile() && allowedExtensions.has(path.extname(entry.name).toLowerCase()))
+        .map(async (entry) => {
+          const absolutePath = path.join(directory, entry.name);
+          const stats = await fs.stat(absolutePath);
+          return {
+            id: path.relative(process.cwd(), absolutePath),
+            name: entry.name,
+            size: stats.size,
+            savedAt: stats.mtime.toISOString(),
+            origin,
+          };
+        }),
+    );
+  } catch (error: unknown) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+    throw error;
+  }
+}
 
 function safeFileName(
   originalName: string,
@@ -90,31 +125,22 @@ export async function GET() {
       recursive: true,
     });
 
-    const entries =
-      await fs.readdir(
-        uploadDirectory,
-        { withFileTypes: true },
-      );
-
-    const files = await Promise.all(
-      entries
-        .filter((entry) => entry.isFile())
-        .map(async (entry) => {
-          const stats = await fs.stat(
-            path.join(
-              uploadDirectory,
-              entry.name,
-            ),
-          );
-
-          return {
-            name: entry.name,
-            size: stats.size,
-            savedAt:
-              stats.mtime.toISOString(),
-          };
-        }),
+    const groups = await Promise.all([
+      listDirectory(uploadDirectory, "researcher"),
+      ...libraryDirectories.map((directory) => listDirectory(directory, "library")),
+    ]);
+    const manifestEntries = await getResearcherManifestEntries();
+    const statusByName = new Map(
+      manifestEntries.map((entry) => [entry.fileName, entry.status]),
     );
+    const files = groups.flat().map((file) => ({
+      ...file,
+      status:
+        statusByName.get(file.name) ??
+        (file.origin === "library"
+          ? "existing"
+          : "saved"),
+    }));
 
     files.sort(
       (first, second) =>
@@ -206,9 +232,12 @@ export async function POST(
     return Response.json({
       success: true,
       file: {
+        id: path.relative(process.cwd(), destination),
         name: path.basename(destination),
         size: bytes.length,
         savedAt: new Date().toISOString(),
+        origin: "researcher",
+        status: "saved",
       },
       status: "saved",
       nextStep:
@@ -232,14 +261,31 @@ export async function POST(
 
 export async function DELETE(request: Request) {
   try {
-    const body = (await request.json()) as { fileName?: unknown };
-    if (typeof body.fileName !== "string" || path.basename(body.fileName) !== body.fileName) {
+    const body = (await request.json()) as { fileName?: unknown; filePath?: unknown };
+    if (
+      typeof body.fileName !== "string" ||
+      path.basename(body.fileName) !== body.fileName ||
+      typeof body.filePath !== "string"
+    ) {
       return Response.json({ error: "Choose a valid saved file." }, { status: 400 });
     }
 
-    const rawPath = path.join(uploadDirectory, body.fileName);
+    const projectRoot = process.cwd();
+    const rawPath = path.resolve(projectRoot, body.filePath);
+    const allowedRawRoots = [
+      path.resolve(projectRoot, "knowledge", "raw", "researcher"),
+      path.resolve(projectRoot, "knowledge", "raw", "microbit"),
+    ];
+    const isAllowed = allowedRawRoots.some((root) => {
+      const relative = path.relative(root, rawPath);
+      return !relative.startsWith("..") && !path.isAbsolute(relative);
+    });
+    if (!isAllowed || path.basename(rawPath) !== body.fileName) {
+      return Response.json({ error: "That file is outside the active library." }, { status: 403 });
+    }
+
     const processedPath = path.join(
-      process.cwd(),
+      projectRoot,
       "knowledge",
       "processed",
       "researcher",
@@ -263,22 +309,52 @@ export async function DELETE(request: Request) {
     if (chunkIds.length > 0) {
       const { error } = await supabaseAdmin.from("documents").delete().in("chunk_id", chunkIds);
       if (error) throw new Error(`Could not remove trained chunks: ${error.message}`);
+    } else {
+      const { data, error: lookupError } = await supabaseAdmin
+        .from("documents")
+        .select("chunk_id, source_file, image_paths");
+      if (lookupError) throw new Error(lookupError.message);
+
+      const matchingRows = (data ?? []).filter(
+        (row) => path.basename(String(row.source_file ?? "")) === body.fileName,
+      );
+      chunkIds = matchingRows
+        .map((row) => String(row.chunk_id ?? ""))
+        .filter(Boolean);
+      imagePaths.push(
+        ...matchingRows.flatMap((row) =>
+          Array.isArray(row.image_paths) ? row.image_paths.filter((item): item is string => typeof item === "string") : [],
+        ),
+      );
+
+      if (chunkIds.length > 0) {
+        const { error } = await supabaseAdmin.from("documents").delete().in("chunk_id", chunkIds);
+        if (error) throw new Error(`Could not remove trained chunks: ${error.message}`);
+      }
     }
 
-    const allowedImages = path.resolve(process.cwd(), "knowledge", "processed", "images", "researcher");
+    const allowedImageRoots = [
+      path.resolve(projectRoot, "knowledge", "processed", "images"),
+      path.resolve(projectRoot, "public", "generated-docs"),
+    ];
     for (const imagePath of new Set(imagePaths)) {
-      const absoluteImage = path.resolve(process.cwd(), imagePath);
-      if (!path.relative(allowedImages, absoluteImage).startsWith("..")) {
+      const absoluteImage = path.resolve(projectRoot, imagePath);
+      const imageIsAllowed = allowedImageRoots.some((root) => {
+        const relative = path.relative(root, absoluteImage);
+        return !relative.startsWith("..") && !path.isAbsolute(relative);
+      });
+      if (imageIsAllowed) {
         await fs.rm(absoluteImage, { force: true });
       }
     }
 
     await fs.rm(processedPath, { force: true });
     await fs.rm(rawPath, { force: true });
+    await updateResearcherManifest(body.fileName, "deleted");
 
     return Response.json({ success: true });
   } catch (error: unknown) {
-    console.error("Could not cancel Researcher file:", error);
+    console.error("Could not permanently delete Researcher file:", error);
     return Response.json({ error: "Could not remove the file and its trained data." }, { status: 500 });
   }
 }

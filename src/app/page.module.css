@@ -122,14 +122,23 @@
   }
 
   .researcherFiles {
-    display: grid;
-    gap: 8px;
     width: min(640px, 100%);
   }
 
-  .researcherFiles h3 {
-    margin: 0 0 4px;
+  .researcherFiles summary {
+    padding: 12px 14px;
+    background: #fff4dc;
+    border: 1px solid #ead2a6;
+    border-radius: 9px;
     font-size: 14px;
+    font-weight: 750;
+    cursor: pointer;
+  }
+
+  .researcherFileList {
+    display: grid;
+    gap: 8px;
+    margin-top: 9px;
   }
 
   .researcherFile {
@@ -151,7 +160,30 @@
 
   .fileActions {
     display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
     gap: 7px;
+  }
+
+  .fileLink {
+    padding: 8px 10px;
+    color: #8a4b00;
+    background: #fff7e8;
+    border: 1px solid #e7c589;
+    border-radius: 7px;
+    font-size: 11px;
+    font-weight: 700;
+    text-decoration: none;
+  }
+
+  .libraryBadge {
+    align-self: center;
+    padding: 5px 8px;
+    color: #6f6252 !important;
+    background: #f2eee7;
+    border-radius: 999px;
+    font-size: 10px !important;
+    font-weight: 700;
   }
 
   .researcherFile strong {
@@ -201,6 +233,27 @@
   }
 
   .cancelButton:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .deleteButton {
+    padding: 8px 11px;
+    color: #ffffff;
+    background: #ad3a2a;
+    border: 1px solid #ad3a2a;
+    border-radius: 7px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .deleteButton:hover:not(:disabled) {
+    background: #8f2e21;
+  }
+
+  .deleteButton:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }

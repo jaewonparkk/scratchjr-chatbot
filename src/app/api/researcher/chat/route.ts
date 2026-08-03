@@ -38,12 +38,33 @@ export async function POST(request: Request) {
       `${path.parse(body.fileName).name}.json`,
     );
 
-    const parsed = JSON.parse(await fs.readFile(processedPath, "utf8")) as { chunks?: Chunk[] };
-    if (!Array.isArray(parsed.chunks) || parsed.chunks.length === 0) {
+    let chunks: Chunk[] = [];
+
+    try {
+      const parsed = JSON.parse(await fs.readFile(processedPath, "utf8")) as { chunks?: Chunk[] };
+      chunks = Array.isArray(parsed.chunks) ? parsed.chunks : [];
+    } catch (error: unknown) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+
+      const reviewedPath = path.join(
+        process.cwd(),
+        "knowledge",
+        "processed",
+        "reviewed_documents.json",
+      );
+      const reviewed = JSON.parse(await fs.readFile(reviewedPath, "utf8")) as {
+        chunks?: Array<Chunk & { source_file?: string }>;
+      };
+      chunks = (reviewed.chunks ?? []).filter(
+        (chunk) => path.basename(chunk.source_file ?? "") === body.fileName,
+      );
+    }
+
+    if (chunks.length === 0) {
       throw new Error("This file has not been trained yet.");
     }
 
-    const context = [...parsed.chunks]
+    const context = [...chunks]
       .sort((a, b) => (a.page_number ?? a.slide_number ?? 9999) - (b.page_number ?? b.slide_number ?? 9999))
       .map((chunk, index) => [
         `[PART ${index + 1}]`,
@@ -78,7 +99,7 @@ export async function POST(request: Request) {
     const answer = response.text?.trim();
     if (!answer) throw new Error("No answer was generated.");
 
-    return Response.json({ answer, chunkCount: parsed.chunks.length });
+    return Response.json({ answer, chunkCount: chunks.length });
   } catch (error: unknown) {
     console.error("Researcher chat failed:", error);
     return Response.json(
