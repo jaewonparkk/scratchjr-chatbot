@@ -4,13 +4,19 @@ import {
   mkdir,
   readdir,
   readFile,
+  rm,
   writeFile,
 } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
+import crypto from "node:crypto";
 
 config({
   path: ".env.local",
 });
+
+const execFileAsync = promisify(execFile);
 
 const GEMINI_API_KEY =
   process.env.GEMINI_API_KEY;
@@ -32,6 +38,12 @@ const PROCESSED_DIRECTORY = path.join(
   "processed",
 );
 
+const PUBLIC_IMAGE_DIRECTORY = path.join(
+  process.cwd(),
+  "public",
+  "generated-docs",
+);
+
 const OUTPUT_PATH = path.join(
   PROCESSED_DIRECTORY,
   "reviewed_documents.json",
@@ -47,12 +59,45 @@ const ai = new GoogleGenAI({
   apiKey: GEMINI_API_KEY,
 });
 
+type DocumentType =
+  | "build-guide"
+  | "pairing-guide"
+  | "troubleshooting-guide"
+  | "parts-guide"
+  | "programming-guide"
+  | "general-reference";
+
+type Topic =
+  | "microbit-build"
+  | "pairing"
+  | "troubleshooting"
+  | "parts"
+  | "programming"
+  | "general";
+
+type ContentType =
+  | "build-step"
+  | "final-preview"
+  | "parts-list"
+  | "pairing-step"
+  | "troubleshooting"
+  | "reference";
+
 type GeminiPage = {
   page_number: number;
   title: string;
   content: string;
-  keywords?: string[];
-  should_display_image?: boolean;
+
+  document_type: DocumentType;
+  topic: Topic;
+  content_type: ContentType;
+
+  step_number: number | null;
+
+  keywords: string[];
+  components: string[];
+
+  should_display_image: boolean;
 };
 
 type GeminiDocumentResult = {
@@ -79,14 +124,23 @@ type ReviewedDocumentsFile = {
   chunks: ReviewedChunk[];
 };
 
-function slugify(
-  value: string,
+function createDocumentId(
+  fileName: string,
 ): string {
-  return value
+  const hash = crypto
+    .createHash("sha256")
+    .update(fileName)
+    .digest("hex")
+    .slice(0, 10);
+
+  const readableName = fileName
     .toLowerCase()
     .replace(/\.pdf$/i, "")
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 50);
+
+  return `${readableName}-${hash}`;
 }
 
 function removeMarkdownFence(
@@ -102,76 +156,70 @@ function removeMarkdownFence(
 function parseGeminiJson(
   responseText: string,
 ): GeminiDocumentResult {
-  const cleaned =
-    removeMarkdownFence(responseText);
-
-  const parsed =
-    JSON.parse(
-      cleaned,
-    ) as GeminiDocumentResult;
+  const parsed = JSON.parse(
+    removeMarkdownFence(responseText),
+  ) as GeminiDocumentResult;
 
   if (
     !parsed ||
-    typeof parsed !== "object"
-  ) {
-    throw new Error(
-      "Gemini returned an invalid result.",
-    );
-  }
-
-  if (
+    typeof parsed !== "object" ||
     !Array.isArray(parsed.pages)
   ) {
     throw new Error(
-      "Gemini response does not contain a pages array.",
+      "Gemini returned an invalid document result.",
     );
   }
 
   return parsed;
 }
 
-function validatePage(
-  page: GeminiPage,
-): boolean {
-  return (
-    Number.isInteger(
-      page.page_number,
-    ) &&
-    page.page_number >= 1 &&
-    typeof page.title ===
-      "string" &&
-    page.title.trim().length > 0 &&
-    typeof page.content ===
-      "string" &&
-    page.content.trim().length > 0
-  );
-}
-
-function buildPrompt(
-  fileName: string,
-): string {
+function buildPrompt(): string {
   return `
-You are processing an official micro:bit and educational robotics PDF for a retrieval-augmented chatbot.
+You are analyzing a PDF for a micro:bit and educational robotics help assistant.
 
-The PDF may contain photographs, diagrams, wiring instructions, parts lists, screenshots, arrows, labels, and very little selectable text. Read the visual content carefully.
+The PDF may be fully image-based. Carefully inspect all text, screenshots, photographs, diagrams, arrows, wires, connectors, labels, buttons, batteries, motors, LEDs, breadboards, and micro:bit pins.
 
-Create one structured entry for every PDF page.
+Do not classify the document using its filename. Classify it only from the actual PDF content.
 
-Requirements:
-- Preserve the actual instructions from the document.
-- Include important visual information such as wire colors, connector types, pin numbers, LED polarity, battery connections, button labels, arrows, and step order.
-- Do not invent missing instructions.
-- Do not add general micro:bit knowledge that is not shown in the PDF.
-- Write clear standalone content so that each page can be retrieved independently.
-- Use the PDF's printed page or step title when available.
-- Use the physical PDF page order for page_number, starting at 1.
-- Set should_display_image to true when the page contains a useful diagram, photograph, wiring layout, screenshot, or build step.
+Create one entry for every physical PDF page.
+
+For each page, determine:
+
+document_type:
+- build-guide
+- pairing-guide
+- troubleshooting-guide
+- parts-guide
+- programming-guide
+- general-reference
+
+topic:
+- microbit-build
+- pairing
+- troubleshooting
+- parts
+- programming
+- general
+
+content_type:
+- build-step
+- final-preview
+- parts-list
+- pairing-step
+- troubleshooting
+- reference
+
+Rules:
+- step_number must be the printed construction or pairing step number when one exists.
+- Otherwise step_number must be null.
+- Preserve exact wire colors, connector types, polarity, pin numbers, component names, and ordering.
+- Do not invent information.
+- content must be understandable without seeing another page.
+- should_display_image must be true when the page contains a useful photo, diagram, screenshot, wiring layout, parts image, final result, or build step.
 - Return valid JSON only.
-- Do not wrap the JSON in Markdown.
+- Do not use Markdown.
 
-File name: ${fileName}
-
-Return exactly this shape:
+Return exactly this structure:
 
 {
   "document_title": "string",
@@ -179,11 +227,13 @@ Return exactly this shape:
     {
       "page_number": 1,
       "title": "string",
-      "content": "Complete description and instructions from this page",
-      "keywords": [
-        "micro:bit",
-        "pairing"
-      ],
+      "content": "string",
+      "document_type": "build-guide",
+      "topic": "microbit-build",
+      "content_type": "build-step",
+      "step_number": 1,
+      "keywords": ["micro:bit", "LED"],
+      "components": ["micro:bit", "LED"],
       "should_display_image": true
     }
   ]
@@ -191,20 +241,146 @@ Return exactly this shape:
 `.trim();
 }
 
+async function renderPdfPages(
+  filePath: string,
+  documentId: string,
+): Promise<Map<number, string>> {
+  const outputDirectory = path.join(
+    PUBLIC_IMAGE_DIRECTORY,
+    documentId,
+  );
+
+  await rm(outputDirectory, {
+    recursive: true,
+    force: true,
+  });
+
+  await mkdir(outputDirectory, {
+    recursive: true,
+  });
+
+  const outputPrefix = path.join(
+    outputDirectory,
+    "page",
+  );
+
+  try {
+    await execFileAsync("pdftoppm", [
+      "-png",
+      "-r",
+      "150",
+      filePath,
+      outputPrefix,
+    ]);
+  } catch (error) {
+    throw new Error(
+      "Could not render PDF pages. Make sure Poppler is installed with: brew install poppler",
+      {
+        cause: error,
+      },
+    );
+  }
+
+  const renderedFiles = (
+    await readdir(outputDirectory)
+  )
+    .filter((fileName) =>
+      /^page-\d+\.png$/i.test(fileName),
+    )
+    .sort((a, b) => {
+      const aNumber = Number(
+        a.match(/\d+/)?.[0] ?? 0,
+      );
+
+      const bNumber = Number(
+        b.match(/\d+/)?.[0] ?? 0,
+      );
+
+      return aNumber - bNumber;
+    });
+
+  const pathsByPage =
+    new Map<number, string>();
+
+  for (const fileName of renderedFiles) {
+    const pageNumber = Number(
+      fileName.match(/\d+/)?.[0],
+    );
+
+    if (
+      !Number.isInteger(pageNumber) ||
+      pageNumber < 1
+    ) {
+      continue;
+    }
+
+    pathsByPage.set(
+      pageNumber,
+      `/generated-docs/${documentId}/${fileName}`,
+    );
+  }
+
+  return pathsByPage;
+}
+
+function normalizeContent(
+  value: string,
+): string {
+  return value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function deduplicateChunks(
+  chunks: ReviewedChunk[],
+): ReviewedChunk[] {
+  const seen = new Set<string>();
+  const result: ReviewedChunk[] = [];
+
+  for (const chunk of chunks) {
+    const key = normalizeContent(
+      chunk.content,
+    );
+
+    if (!key || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    result.push(chunk);
+  }
+
+  return result;
+}
+
 async function processPdf(
   fileName: string,
 ): Promise<ReviewedChunk[]> {
-  const filePath =
-    path.join(
-      RAW_DIRECTORY,
-      fileName,
-    );
+  const filePath = path.join(
+    RAW_DIRECTORY,
+    fileName,
+  );
 
   const fileBuffer =
     await readFile(filePath);
 
+  const documentId =
+    createDocumentId(fileName);
+
   console.log(
-    `Reading ${fileName} with Gemini...`,
+    `Rendering ${fileName}...`,
+  );
+
+  const pageImagePaths =
+    await renderPdfPages(
+      filePath,
+      documentId,
+    );
+
+  console.log(
+    `Analyzing ${fileName} with Gemini...`,
   );
 
   const response =
@@ -213,19 +389,14 @@ async function processPdf(
       contents: [
         {
           inlineData: {
-            mimeType:
-              "application/pdf",
-            data:
-              fileBuffer.toString(
-                "base64",
-              ),
+            mimeType: "application/pdf",
+            data: fileBuffer.toString(
+              "base64",
+            ),
           },
         },
         {
-          text:
-            buildPrompt(
-              fileName,
-            ),
+          text: buildPrompt(),
         },
       ],
       config: {
@@ -240,46 +411,50 @@ async function processPdf(
 
   if (!responseText) {
     throw new Error(
-      `Gemini returned no content for ${fileName}.`,
+      `Gemini returned no result for ${fileName}.`,
     );
   }
 
   const document =
-    parseGeminiJson(
-      responseText,
-    );
+    parseGeminiJson(responseText);
 
-  const fileSlug =
-    slugify(fileName);
+  const chunks: ReviewedChunk[] = [];
 
-  const chunks:
-    ReviewedChunk[] = [];
-
-  for (
-    const page
-    of document.pages
-  ) {
-    if (!validatePage(page)) {
-      console.warn(
-        `Skipped invalid page entry in ${fileName}.`,
-      );
+  for (const page of document.pages) {
+    if (
+      !Number.isInteger(
+        page.page_number,
+      ) ||
+      page.page_number < 1 ||
+      !page.title?.trim() ||
+      !page.content?.trim()
+    ) {
       continue;
     }
 
+    const imagePath =
+      pageImagePaths.get(
+        page.page_number,
+      );
+
+    const shouldDisplayImage =
+      Boolean(
+        page.should_display_image &&
+          imagePath,
+      );
+
     chunks.push({
       id: [
-        fileSlug,
+        documentId,
         `page-${page.page_number}`,
       ].join("-"),
 
-      title:
-        page.title.trim(),
+      title: page.title.trim(),
 
       content:
         page.content.trim(),
 
-      source_file:
-        fileName,
+      source_file: fileName,
 
       file_type: "pdf",
 
@@ -291,41 +466,52 @@ async function processPdf(
 
       slide_number: null,
 
-      image_paths: [],
+      image_paths:
+        shouldDisplayImage &&
+        imagePath
+          ? [imagePath]
+          : [],
 
       should_display_image:
-        Boolean(
-          page.should_display_image,
-        ),
+        shouldDisplayImage,
 
       metadata: {
+        document_id: documentId,
+
         document_title:
           document.document_title,
 
-        keywords:
-          Array.isArray(
-            page.keywords,
-          )
-            ? page.keywords
-            : [],
+        document_type:
+          page.document_type,
+
+        topic: page.topic,
+
+        content_type:
+          page.content_type,
+
+        step_number:
+          page.step_number,
+
+        keywords: Array.isArray(
+          page.keywords,
+        )
+          ? page.keywords
+          : [],
+
+        components: Array.isArray(
+          page.components,
+        )
+          ? page.components
+          : [],
 
         ingestion: {
           provider: "gemini",
-          model:
-            GEMINI_MODEL,
+          model: GEMINI_MODEL,
           source_type:
             "native-pdf",
         },
       },
     });
-  }
-
-  if (
-    chunks.length === 0
-  ) {
-    throw new Error(
-      `No valid pages were generated for ${fileName}.`,
-    );
   }
 
   console.log(
@@ -336,41 +522,33 @@ async function processPdf(
 }
 
 async function main(): Promise<void> {
-  await mkdir(
-    PROCESSED_DIRECTORY,
+  await mkdir(PROCESSED_DIRECTORY, {
+    recursive: true,
+  });
+
+  await mkdir(PUBLIC_IMAGE_DIRECTORY, {
+    recursive: true,
+  });
+
+  const entries = await readdir(
+    RAW_DIRECTORY,
     {
-      recursive: true,
+      withFileTypes: true,
     },
   );
 
-  const entries =
-    await readdir(
-      RAW_DIRECTORY,
-      {
-        withFileTypes: true,
-      },
-    );
+  const pdfFiles = entries
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        entry.name
+          .toLowerCase()
+          .endsWith(".pdf"),
+    )
+    .map((entry) => entry.name)
+    .sort();
 
-  const pdfFiles =
-    entries
-      .filter(
-        (entry) =>
-          entry.isFile() &&
-          entry.name
-            .toLowerCase()
-            .endsWith(
-              ".pdf",
-            ),
-      )
-      .map(
-        (entry) =>
-          entry.name,
-      )
-      .sort();
-
-  if (
-    pdfFiles.length === 0
-  ) {
+  if (pdfFiles.length === 0) {
     throw new Error(
       `No PDF files found in ${RAW_DIRECTORY}.`,
     );
@@ -380,31 +558,24 @@ async function main(): Promise<void> {
     `Found ${pdfFiles.length} PDF file(s).`,
   );
 
-  const allChunks:
-    ReviewedChunk[] = [];
+  const allChunks: ReviewedChunk[] = [];
 
-  for (
-    const fileName
-    of pdfFiles
-  ) {
+  for (const fileName of pdfFiles) {
     const chunks =
-      await processPdf(
-        fileName,
-      );
+      await processPdf(fileName);
 
-    allChunks.push(
-      ...chunks,
-    );
+    allChunks.push(...chunks);
   }
 
-  const output:
-    ReviewedDocumentsFile = {
-      included_chunk_count:
-        allChunks.length,
+  const uniqueChunks =
+    deduplicateChunks(allChunks);
 
-      chunks:
-        allChunks,
-    };
+  const output: ReviewedDocumentsFile = {
+    included_chunk_count:
+      uniqueChunks.length,
+
+    chunks: uniqueChunks,
+  };
 
   await writeFile(
     OUTPUT_PATH,
@@ -418,33 +589,25 @@ async function main(): Promise<void> {
 
   console.log();
   console.log(
-    `Created ${OUTPUT_PATH}`,
+    `Generated ${uniqueChunks.length} unique chunk(s).`,
   );
 
   console.log(
-    `Generated ${allChunks.length} total chunk(s).`,
+    `Created ${OUTPUT_PATH}`,
   );
 }
 
 main().catch(
-  (
-    error: unknown,
-  ) => {
+  (error: unknown) => {
     console.error();
     console.error(
       "PDF ingestion failed.",
     );
 
-    if (
-      error instanceof Error
-    ) {
-      console.error(
-        error.message,
-      );
+    if (error instanceof Error) {
+      console.error(error.message);
     } else {
-      console.error(
-        error,
-      );
+      console.error(error);
     }
 
     process.exit(1);

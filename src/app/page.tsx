@@ -1,6 +1,7 @@
 "use client";
 
 import type {
+  ChangeEvent,
   FormEvent,
   ReactNode,
 } from "react";
@@ -49,6 +50,12 @@ type ChatApiResponse = {
   sources?: ChatSource[];
   images?: ChatImage[];
   error?: string;
+};
+
+type ResearcherFile = {
+  name: string;
+  size: number;
+  savedAt: string;
 };
 
 function createMessageId(): string {
@@ -112,6 +119,18 @@ export default function Home() {
     setIsLoading,
   ] = useState(false);
 
+  const [researcherFiles, setResearcherFiles] =
+    useState<ResearcherFile[]>([]);
+
+  const [isUploading, setIsUploading] =
+    useState(false);
+
+  const [uploadMessage, setUploadMessage] =
+    useState("");
+
+  const [uploadError, setUploadError] =
+    useState("");
+
   const messagesEndRef =
     useRef<HTMLDivElement | null>(
       null,
@@ -138,6 +157,90 @@ export default function Home() {
     },
     [],
   );
+
+  useEffect(() => {
+    async function loadResearcherFiles() {
+      try {
+        const response = await fetch(
+          "/api/researcher/files",
+          { cache: "no-store" },
+        );
+
+        const data = (await response.json()) as {
+          files?: ResearcherFile[];
+        };
+
+        if (
+          response.ok &&
+          Array.isArray(data.files)
+        ) {
+          setResearcherFiles(data.files);
+        }
+      } catch {
+        // The chat remains usable if the local file list fails.
+      }
+    }
+
+    void loadResearcherFiles();
+  }, []);
+
+  async function uploadResearchFile(
+    event: ChangeEvent<HTMLInputElement>,
+  ) {
+    const file = event.target.files?.[0];
+
+    event.target.value = "";
+
+    if (!file || isUploading) {
+      return;
+    }
+
+    setIsUploading(true);
+    setUploadMessage("");
+    setUploadError("");
+
+    try {
+      const formData = new FormData();
+      formData.set("file", file);
+
+      const response = await fetch(
+        "/api/researcher/files",
+        {
+          method: "POST",
+          body: formData,
+        },
+      );
+
+      const data = (await response.json()) as {
+        file?: ResearcherFile;
+        error?: string;
+      };
+
+      if (!response.ok || !data.file) {
+        throw new Error(
+          data.error ??
+            "Could not save the file.",
+        );
+      }
+
+      setResearcherFiles((currentFiles) => [
+        data.file as ResearcherFile,
+        ...currentFiles,
+      ]);
+
+      setUploadMessage(
+        `${data.file.name} saved. It is ready for ingestion.`,
+      );
+    } catch (error: unknown) {
+      setUploadError(
+        error instanceof Error
+          ? error.message
+          : "Could not save the file.",
+      );
+    } finally {
+      setIsUploading(false);
+    }
+  }
 
   function stopGenerating() {
     abortControllerRef.current
@@ -306,7 +409,82 @@ export default function Home() {
 
   return (
     <main className={styles.page}>
-      <section className={styles.chat}>
+      <div className={styles.workspace}>
+        <aside className={styles.researcher}>
+          <div>
+            <span className={styles.eyebrow}>
+              Knowledge workspace
+            </span>
+
+            <h2>Researcher</h2>
+
+            <p>
+              Train the assistant with a new
+              classroom file.
+            </p>
+          </div>
+
+          <label className={styles.uploadButton}>
+            {isUploading
+              ? "Saving..."
+              : "Choose a file"}
+
+            <input
+              type="file"
+              accept=".pdf,.docx,.pptx,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff"
+              disabled={isUploading}
+              onChange={uploadResearchFile}
+            />
+          </label>
+
+          <p className={styles.fileHint}>
+            PDF, DOCX, PPTX, or image · max 25 MB
+          </p>
+
+          {uploadMessage ? (
+            <p className={styles.uploadSuccess}>
+              {uploadMessage}
+            </p>
+          ) : null}
+
+          {uploadError ? (
+            <p className={styles.uploadError}>
+              {uploadError}
+            </p>
+          ) : null}
+
+          <div className={styles.researcherFiles}>
+            <h3>Saved files</h3>
+
+            {researcherFiles.length === 0 ? (
+              <p className={styles.emptyFiles}>
+                No Researcher files yet.
+              </p>
+            ) : (
+              researcherFiles.map((file) => (
+                <div
+                  className={styles.researcherFile}
+                  key={`${file.name}-${file.savedAt}`}
+                >
+                  <strong>{file.name}</strong>
+                  <span>
+                    {(file.size / 1024 / 1024).toFixed(1)} MB
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className={styles.pipelineNote}>
+            <strong>Next step</strong>
+            <code>python -m ingestion.run</code>
+            <span>
+              Then review and upload embeddings.
+            </span>
+          </div>
+        </aside>
+
+        <section className={styles.chat}>
         <header className={styles.header}>
           <h1>
             Blocks &amp; Bots Assistant
@@ -528,7 +706,8 @@ export default function Home() {
             </button>
           )}
         </form>
-      </section>
+        </section>
+      </div>
     </main>
   );
 }

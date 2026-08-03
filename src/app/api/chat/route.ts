@@ -1,63 +1,22 @@
-import path from "node:path";
+import { GoogleGenAI } from "@google/genai";
 
 import {
-  extractStepNumber,
-  searchBuildSteps,
   searchDocuments,
   type SearchResult,
 } from "@/lib/rag/search";
-
-import {
-  parseUserIntent,
-  type IntentTopic,
-  type ParsedIntent,
-} from "@/lib/rag/intent";
-
-import {
-  GEMINI_MODEL_NAME,
-  generateGroundedAnswer,
-  generateGroundedBuildGuide,
-  generateGroundedLessonAnswer,
-  generateGroundedStepAnswer,
-  type ChatHistoryMessage,
-} from "@/lib/rag/gemini";
-
-import {
-  searchLessonBundle,
-} from "@/lib/rag/lessons";
-
-import {
-  supabaseAdmin,
-} from "@/lib/supabase/admin";
+import { parseUserIntent } from "@/lib/rag/intent";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const DOWNLOAD_SOURCE_PATTERN =
-  "%Blocks and Bots Download Instructions.pptx%";
+const GEMINI_MODEL =
+  process.env.GEMINI_MODEL ??
+  "gemini-2.5-flash";
 
-
-const DOCUMENT_COLUMNS = [
-  "id",
-  "chunk_id",
-  "title",
-  "content",
-  "source_file",
-  "file_type",
-  "section",
-  "page_number",
-  "slide_number",
-  "image_paths",
-  "should_display_image",
-  "metadata",
-].join(",");
-
-type GuideTopic =
-  | "microbit-build"
-  | "download-instructions"
-  | "pairing"
-  | "lesson"
-  | null;
+type ChatHistoryMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
 
 type ChatRequestBody = {
   question?: unknown;
@@ -84,55 +43,61 @@ type ChatImage = {
   slide: number | null;
 };
 
-type GenerationInfo = {
-  provider:
-    | "gemini"
-    | "approved-materials"
-    | "router";
-  model: string | null;
-  grounded: boolean;
+type SearchIntent = {
+  stepNumber: number | null;
+  wantsImage: boolean;
+  isGreeting: boolean;
+  choiceNumber: number | null;
+  topic: "microbit-build" | "pairing" | null;
+  wantsFullGuide: boolean;
 };
 
-function geminiGeneration(): GenerationInfo {
-  return {
-    provider: "gemini",
-    model:
-      GEMINI_MODEL_NAME,
-    grounded: true,
-  };
-}
+type DocumentGroup = {
+  key: string;
+  label: string;
+  results: SearchResult[];
+};
 
-function approvedGeneration(): GenerationInfo {
-  return {
-    provider:
-      "approved-materials",
-    model: null,
-    grounded: true,
-  };
-}
+type PendingClarification = {
+  stepNumber: number;
+  originalQuestion: string;
+};
 
-function routerGeneration(): GenerationInfo {
-  return {
-    provider: "router",
-    model: null,
-    grounded: false,
-  };
+let geminiClient: GoogleGenAI | null =
+  null;
+
+function getGeminiClient(): GoogleGenAI {
+  const apiKey =
+    process.env.GEMINI_API_KEY;
+
+  if (!apiKey) {
+    throw new Error(
+      "GEMINI_API_KEY is missing from .env.local.",
+    );
+  }
+
+  if (!geminiClient) {
+    geminiClient =
+      new GoogleGenAI({
+        apiKey,
+      });
+  }
+
+  return geminiClient;
 }
 
 function readQuestion(
   body: ChatRequestBody,
 ): string {
   if (
-    typeof body.question ===
-      "string" &&
+    typeof body.question === "string" &&
     body.question.trim()
   ) {
     return body.question.trim();
   }
 
   if (
-    typeof body.message ===
-      "string" &&
+    typeof body.message === "string" &&
     body.message.trim()
   ) {
     return body.message.trim();
@@ -148,13 +113,10 @@ function readHistory(
     return [];
   }
 
-  const history:
-    ChatHistoryMessage[] = [];
+  const history: ChatHistoryMessage[] =
+    [];
 
-  for (
-    const item
-    of value.slice(-16)
-  ) {
+  for (const item of value.slice(-16)) {
     if (
       !item ||
       typeof item !== "object"
@@ -171,7 +133,7 @@ function readHistory(
     const role =
       record.role;
 
-    const rawContent =
+    const content =
       typeof record.content ===
         "string"
         ? record.content
@@ -185,7 +147,7 @@ function readHistory(
         role !== "user" &&
         role !== "assistant"
       ) ||
-      !rawContent.trim()
+      !content.trim()
     ) {
       continue;
     }
@@ -193,565 +155,574 @@ function readHistory(
     history.push({
       role,
       content:
-        rawContent
+        content
           .trim()
-          .slice(0, 5000),
+          .slice(0, 6000),
     });
   }
 
-  return history.slice(-12);
+  return history;
 }
 
-function normalizeFileType(
-  value: unknown,
-): SearchResult["file_type"] {
+function analyzeQuestion(
+  question: string,
+): SearchIntent {
+  const normalized =
+    question
+      .trim()
+      .toLowerCase();
+
+  const isGreeting =
+    /^(hi|hello|hey|hiya|howdy|good morning|good afternoon|good evening)[!?.\s]*$/i.test(
+      normalized,
+    );
+
+  const wantsImage =
+    /\b(image|images|picture|pictures|photo|photos|diagram|diagrams|visual|visuals|look like|looks like)\b/i.test(
+      normalized,
+    );
+
+  const stepMatch =
+    normalized.match(
+      /\bstep\s*#?\s*(\d{1,3})\b/i,
+    );
+
+  const rawStepNumber =
+    stepMatch
+      ? Number(stepMatch[1])
+      : null;
+
+  const stepNumber =
+    Number.isInteger(rawStepNumber) &&
+    Number(rawStepNumber) >= 1
+      ? rawStepNumber
+      : null;
+
+  /*
+   * Handles:
+   * 1
+   * 1.
+   * 1)
+   * 1. Document name
+   */
+  const choiceMatch =
+    normalized.match(
+      /^\s*(\d{1,2})(?:\s*[.)]\s*|\s+|$)/,
+    );
+
+  const rawChoiceNumber =
+    choiceMatch
+      ? Number(choiceMatch[1])
+      : null;
+
+  const choiceNumber =
+    Number.isInteger(
+      rawChoiceNumber,
+    ) &&
+    Number(rawChoiceNumber) >= 1
+      ? rawChoiceNumber
+      : null;
+
+  const mentionsPairing =
+    /\b(pair|pairing|connect(?:ing|ion)?)\b/i.test(
+      normalized,
+    );
+
+  const mentionsBuild =
+    /\b(build|building|construct(?:ion|ing)?|breadboard|alligator|motor|led|battery|wire|wiring)\b/i.test(
+      normalized,
+    );
+
+  const topic =
+    mentionsPairing && !mentionsBuild
+      ? "pairing"
+      : mentionsBuild
+        ? "microbit-build"
+        : null;
+
+  const wantsFullGuide =
+    /\b(step[- ]by[- ]step|all (?:the )?steps|every step|full (?:build|guide|instructions?)|complete (?:build|guide|instructions?)|from start to finish)\b/i.test(
+      normalized,
+    );
+
+  return {
+    stepNumber,
+    wantsImage,
+    isGreeting,
+    choiceNumber,
+    topic,
+    wantsFullGuide,
+  };
+}
+
+function needsConversationResolution(
+  question: string,
+  history: ChatHistoryMessage[],
+): boolean {
+  if (history.length === 0) {
+    return false;
+  }
+
+  const normalized =
+    question.trim().toLowerCase();
+
+  return (
+    /\b(it|that|this|those|these|one|ones|them|they|its|their)\b/i.test(
+      normalized,
+    ) ||
+    /^(what|how)\s+about\b/i.test(
+      normalized,
+    ) ||
+    /^(and|so|then)\b/i.test(
+      normalized,
+    )
+  );
+}
+
+function readMetadataString(
+  result: SearchResult,
+  key: string,
+): string | null {
+  const value =
+    result.metadata[key];
+
+  return (
+    typeof value === "string" &&
+    value.trim()
+  )
+    ? value.trim()
+    : null;
+}
+
+function readMetadataNumber(
+  result: SearchResult,
+  key: string,
+): number | null {
+  const value =
+    result.metadata[key];
+
   if (
-    value === "docx" ||
-    value === "pdf" ||
-    value === "pptx" ||
-    value === "image" ||
-    value === "markdown"
+    typeof value === "number" &&
+    Number.isFinite(value)
   ) {
     return value;
   }
 
-  return "docx";
-}
-
-function normalizeSearchResult(
-  result: Partial<SearchResult>,
-): SearchResult {
-  return {
-    id:
-      Number(result.id ?? 0),
-
-    chunk_id:
-      result.chunk_id ?? "",
-
-    title:
-      result.title ??
-      "Untitled document",
-
-    content:
-      result.content ?? "",
-
-    source_file:
-      result.source_file ?? "",
-
-    file_type:
-      normalizeFileType(
-        result.file_type,
-      ),
-
-    section:
-      result.section ?? "",
-
-    page_number:
-      result.page_number ?? null,
-
-    slide_number:
-      result.slide_number ?? null,
-
-    image_paths:
-      Array.isArray(
-        result.image_paths,
-      )
-        ? result.image_paths
-        : [],
-
-    should_display_image:
-      Boolean(
-        result.should_display_image,
-      ),
-
-    metadata:
-      result.metadata &&
-      typeof result.metadata ===
-        "object"
-        ? result.metadata
-        : {},
-
-    similarity:
-      Number(
-        result.similarity ?? 1,
-      ),
-  };
-}
-
-function findLastReferencedStep(
-  history: ChatHistoryMessage[],
-): number | null {
-  for (
-    let index =
-      history.length - 1;
-    index >= 0;
-    index -= 1
-  ) {
-    const number =
-      extractStepNumber(
-        history[index].content,
-      );
-
-    if (number !== null) {
-      return number;
-    }
-  }
-
-  return null;
-}
-
-function inferTopicFromHistory(
-  history: ChatHistoryMessage[],
-): GuideTopic {
-  for (
-    let index =
-      history.length - 1;
-    index >= 0;
-    index -= 1
-  ) {
-    const text =
-      history[index].content
-        .toLowerCase();
-
-    if (
-      text.includes(
-        "micro:bit building guide",
-      ) ||
-      text.includes(
-        "microbit building guide",
-      ) ||
-      /\b(breadboard|alligator clip|gnd|socket\/socket|plug\/plug|motor wire)\b/.test(
-        text,
-      )
-    ) {
-      return "microbit-build";
-    }
-
-    if (
-      text.includes(
-        "download instructions",
-      ) ||
-      /\b(home screen|apps screen|install the app)\b/.test(
-        text,
-      )
-    ) {
-      return "download-instructions";
-    }
-
-    if (
-      /\b(pair|pairing)\b/.test(
-        text,
-      ) &&
-      /\bmicro\s*:?\s*bit\b/.test(
-        text,
-      )
-    ) {
-      return "pairing";
-    }
-
-    if (
-      /\blesson\s*\d+\b/.test(
-        text,
-      ) ||
-      text.includes(
-        "curriculum lesson",
-      )
-    ) {
-      return "lesson";
-    }
-  }
-
-  return null;
-}
-
-function resolveGuideTopic(
-  intent: ParsedIntent,
-  history: ChatHistoryMessage[],
-): GuideTopic {
   if (
-    intent.topic ===
-      "microbit-build" ||
-    intent.topic ===
-      "download-instructions" ||
-    intent.topic ===
-      "pairing" ||
-    intent.topic ===
-      "lesson"
+    typeof value === "string" &&
+    value.trim()
   ) {
-    return intent.topic;
+    const parsed =
+      Number(value);
+
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
   }
 
-  return inferTopicFromHistory(
-    history,
+  return null;
+}
+
+function humanizeLabel(
+  value: string,
+): string {
+  return value
+    .replace(/[-_]+/g, " ")
+    .replace(
+      /\b\w/g,
+      (character) =>
+        character.toUpperCase(),
+    );
+}
+
+function getDocumentGroupKey(
+  result: SearchResult,
+): string {
+  return (
+    readMetadataString(
+      result,
+      "document_id",
+    ) ??
+    readMetadataString(
+      result,
+      "document_title",
+    ) ??
+    result.source_file ??
+    result.chunk_id
   );
 }
 
-function readNumberFromImageSubject(
-  value: string | null,
-): number | null {
-  if (!value) {
-    return null;
-  }
-
-  const match =
-    value.match(
-      /\b(?:step|image|picture|photo)?\s*#?\s*(\d{1,3})\b/i,
+function getDocumentGroupLabel(
+  result: SearchResult,
+): string {
+  const documentTitle =
+    readMetadataString(
+      result,
+      "document_title",
     );
 
-  if (!match) {
-    return null;
+  if (documentTitle) {
+    return documentTitle;
   }
 
-  const number =
-    Number(match[1]);
+  const topic =
+    readMetadataString(
+      result,
+      "topic",
+    );
+
+  if (topic) {
+    return humanizeLabel(topic);
+  }
+
+  const documentType =
+    readMetadataString(
+      result,
+      "document_type",
+    );
+
+  if (documentType) {
+    return humanizeLabel(
+      documentType,
+    );
+  }
 
   return (
-    Number.isInteger(number) &&
-    number >= 1
-  )
-    ? number
-    : null;
+    result.source_file ||
+    result.title
+  );
 }
 
-function resolveRequestedStep(
-  intent: ParsedIntent,
-  history: ChatHistoryMessage[],
-): number | null {
-  if (
-    intent.stepNumber !== null
-  ) {
-    return intent.stepNumber;
-  }
-
-  const imageNumber =
-    readNumberFromImageSubject(
-      intent.imageSubject,
-    );
-
-  if (imageNumber !== null) {
-    return imageNumber;
-  }
-
-  const previousStep =
-    findLastReferencedStep(
-      history,
-    );
-
-  if (previousStep === null) {
-    return null;
-  }
-
-  if (
-    intent.action ===
-    "next-step"
-  ) {
-    return previousStep + 1;
-  }
-
-  if (
-    intent.action ===
-    "previous-step"
-  ) {
-    return Math.max(
-      1,
-      previousStep - 1,
-    );
-  }
-
-  return null;
-}
-
-function sortAndDeduplicateSteps(
+function groupResultsByDocument(
   results: SearchResult[],
-): SearchResult[] {
-  const sorted =
-    [...results]
-      .map((result) => ({
+): DocumentGroup[] {
+  const groupMap =
+    new Map<
+      string,
+      DocumentGroup
+    >();
+
+  for (const result of results) {
+    const key =
+      getDocumentGroupKey(
         result,
-        number:
-          extractStepNumber(
-            [
-              result.title,
-              result.section,
-            ].join(" "),
-          ),
-      }))
-      .filter(
-        (
-          item,
-        ): item is {
-          result: SearchResult;
-          number: number;
-        } =>
-          item.number !== null,
-      )
-      .sort(
-        (first, second) =>
-          first.number -
-          second.number,
       );
 
-  const seen =
-    new Set<number>();
+    const existingGroup =
+      groupMap.get(key);
 
-  const unique:
-    SearchResult[] = [];
+    if (existingGroup) {
+      existingGroup.results.push(
+        result,
+      );
 
-  for (const item of sorted) {
-    if (
-      seen.has(item.number)
-    ) {
       continue;
     }
 
-    seen.add(item.number);
-    unique.push(item.result);
+    groupMap.set(key, {
+      key,
+      label:
+        getDocumentGroupLabel(
+          result,
+        ),
+      results: [result],
+    });
   }
 
-  return unique;
-}
-
-async function searchDownloadSteps(): Promise<
-  SearchResult[]
-> {
-  const {
-    data,
-    error,
-  } = await supabaseAdmin
-    .from("documents")
-    .select(DOCUMENT_COLUMNS)
-    .ilike(
-      "source_file",
-      DOWNLOAD_SOURCE_PATTERN,
-    )
-    .order(
-      "slide_number",
-      {
-        ascending: true,
-        nullsFirst: false,
-      },
-    );
-
-  if (error) {
-    throw new Error(
-      `Download-step search failed: ${error.message}`,
-    );
-  }
-
-  if (!Array.isArray(data)) {
-    return [];
-  }
-
-  return sortAndDeduplicateSteps(
-    data.map((item) =>
-      normalizeSearchResult(
-        item as Partial<SearchResult>,
-      ),
-    ),
+  return Array.from(
+    groupMap.values(),
   );
 }
 
-function buildRetrievalQuestion(
-  intent: ParsedIntent,
+function normalizeSearchText(
+  value: string,
 ): string {
-  const topicDescriptions:
-    Record<IntentTopic, string> = {
-      "microbit-build":
-        "micro:bit physical build, wiring, connectors, breadboard, motor, LEDs, and battery",
-      "download-instructions":
-        "Blocks and Bots app download and installation instructions",
-      pairing:
-        "pairing a micro:bit with the Blocks and Bots app",
-      lesson:
-        "Blocks and Bots curriculum lesson",
-      virtues:
-        "collaboration virtues and the virtues palette",
-      scratchjr:
-        "ScratchJr programming and classroom activities",
-      general:
-        "Blocks and Bots curriculum",
-      unknown:
-        "Blocks and Bots curriculum",
-    };
-
-  const parts = [
-    intent.normalizedQuestion,
-    `Topic: ${topicDescriptions[intent.topic]}`,
-  ];
-
-  if (
-    intent.components.length > 0
-  ) {
-    parts.push(
-      `Components: ${intent.components.join(
-        ", ",
-      )}`,
-    );
-  }
-
-  return parts.join("\n");
-}
-
-function chooseTextContextResults(
-  results: SearchResult[],
-  action: ParsedIntent["action"],
-): SearchResult[] {
-  if (results.length === 0) {
-    return [];
-  }
-
-  if (
-    action ===
-    "troubleshoot"
-  ) {
-    return results.slice(0, 6);
-  }
-
-  const highestSimilarity =
-    results[0].similarity;
-
-  const cutoff =
-    Math.max(
-      0.45,
-      highestSimilarity - 0.07,
-    );
-
-  return results
-    .filter(
-      (result) =>
-        result.similarity >=
-        cutoff,
-    )
-    .slice(0, 5);
-}
-
-function getSearchableText(
-  result: SearchResult,
-): string {
-  return [
-    result.title,
-    result.section,
-    result.content,
-    result.source_file,
-  ]
-    .join(" ")
-    .toLowerCase();
-}
-
-function chooseImageResults(
-  results: SearchResult[],
-  intent: ParsedIntent,
-  limit = 2,
-): SearchResult[] {
-  const queryTerms = [
-    intent.normalizedQuestion,
-    intent.imageSubject ?? "",
-    ...intent.components,
-  ]
-    .join(" ")
+  return value
     .toLowerCase()
     .replace(
       /[^\p{L}\p{N}]+/gu,
       " ",
     )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getMeaningfulTerms(
+  value: string,
+): string[] {
+  const ignoredTerms =
+    new Set([
+      "show",
+      "step",
+      "image",
+      "picture",
+      "photo",
+      "diagram",
+      "please",
+      "need",
+      "look",
+      "want",
+      "give",
+      "tell",
+      "from",
+      "this",
+      "that",
+      "the",
+      "and",
+      "for",
+    ]);
+
+  return normalizeSearchText(value)
     .split(/\s+/)
     .filter(
       (term) =>
-        term.length >= 3,
+        term.length >= 3 &&
+        !ignoredTerms.has(term),
+    );
+}
+
+function scoreGroupAgainstText(
+  group: DocumentGroup,
+  text: string,
+): number {
+  const terms =
+    getMeaningfulTerms(text);
+
+  if (terms.length === 0) {
+    return 0;
+  }
+
+  const searchableText =
+    normalizeSearchText(
+      [
+        group.label,
+        ...group.results.flatMap(
+          (result) => [
+            result.title,
+            result.content,
+            result.source_file,
+            JSON.stringify(
+              result.metadata,
+            ),
+          ],
+        ),
+      ].join(" "),
     );
 
-  return [...results]
-    .filter(
-      (result) =>
-        result.should_display_image &&
-        result.image_paths.length > 0,
-    )
-    .sort(
-      (first, second) => {
-        const firstText =
-          getSearchableText(first);
+  let score = 0;
 
-        const secondText =
-          getSearchableText(second);
+  for (const term of terms) {
+    if (
+      searchableText.includes(term)
+    ) {
+      score += 1;
+    }
+  }
 
-        let firstScore =
-          first.similarity;
+  return score;
+}
 
-        let secondScore =
-          second.similarity;
+function findGroupFromConversation(
+  groups: DocumentGroup[],
+  question: string,
+  history: ChatHistoryMessage[],
+): DocumentGroup | null {
+  const conversationText = [
+    ...history
+      .slice(-6)
+      .map(
+        (message) =>
+          message.content,
+      ),
+    question,
+  ].join("\n");
 
-        for (
-          const term
-          of queryTerms
-        ) {
-          if (
-            firstText.includes(
-              term,
-            )
-          ) {
-            firstScore += 0.04;
-          }
+  const scoredGroups =
+    groups.map((group) => ({
+      group,
+      score:
+        scoreGroupAgainstText(
+          group,
+          conversationText,
+        ),
+    }));
 
-          if (
-            secondText.includes(
-              term,
-            )
-          ) {
-            secondScore += 0.04;
-          }
-        }
+  scoredGroups.sort(
+    (first, second) =>
+      second.score -
+      first.score,
+  );
 
-        if (
-          first.file_type ===
-          "image"
-        ) {
-          firstScore += 0.2;
-        }
+  const best =
+    scoredGroups[0];
 
-        if (
-          second.file_type ===
-          "image"
-        ) {
-          secondScore += 0.2;
-        }
+  const second =
+    scoredGroups[1];
 
-        return (
-          secondScore -
-          firstScore
-        );
-      },
-    )
-    .slice(0, limit);
+  if (
+    !best ||
+    best.score <= 0
+  ) {
+    return null;
+  }
+
+  if (
+    second &&
+    best.score === second.score
+  ) {
+    return null;
+  }
+
+  return best.group;
+}
+
+function findPendingClarification(
+  history: ChatHistoryMessage[],
+): PendingClarification | null {
+  for (
+    let index =
+      history.length - 1;
+    index >= 0;
+    index -= 1
+  ) {
+    const message =
+      history[index];
+
+    if (
+      message.role !== "assistant"
+    ) {
+      continue;
+    }
+
+    const match =
+      message.content.match(
+        /I found Step\s+(\d{1,3})\s+in more than one uploaded document/i,
+      );
+
+    if (!match) {
+      continue;
+    }
+
+    const stepNumber =
+      Number(match[1]);
+
+    if (
+      !Number.isInteger(
+        stepNumber,
+      ) ||
+      stepNumber < 1
+    ) {
+      return null;
+    }
+
+    for (
+      let earlierIndex =
+        index - 1;
+      earlierIndex >= 0;
+      earlierIndex -= 1
+    ) {
+      const earlierMessage =
+        history[earlierIndex];
+
+      if (
+        earlierMessage.role ===
+        "user"
+      ) {
+        return {
+          stepNumber,
+          originalQuestion:
+            earlierMessage.content,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+function createClarificationAnswer(
+  stepNumber: number,
+  groups: DocumentGroup[],
+): string {
+  const choices =
+    groups
+      .map(
+        (group, index) => {
+          const firstResult =
+            group.results[0];
+
+          return [
+            `${index + 1}. ${group.label}`,
+            `   ${firstResult.title}`,
+          ].join("\n");
+        },
+      )
+      .join("\n\n");
+
+  return [
+    `I found Step ${stepNumber} in more than one uploaded document.`,
+    "",
+    "Which one do you mean?",
+    "",
+    choices,
+    "",
+    "Reply with the number or document name.",
+  ].join("\n");
+}
+
+function formatHistory(
+  history: ChatHistoryMessage[],
+): string {
+  if (history.length === 0) {
+    return "No earlier conversation.";
+  }
+
+  return history
+    .slice(-12)
+    .map((message) => {
+      const label =
+        message.role === "user"
+          ? "USER"
+          : "ASSISTANT";
+
+      return [
+        `${label}:`,
+        message.content,
+      ].join("\n");
+    })
+    .join("\n\n");
 }
 
 function buildContext(
   results: SearchResult[],
 ): string {
-  return results
-    .map(
-      (result, index) => {
-        const location =
-          result.page_number !==
-          null
-            ? `Page ${result.page_number}`
-            : result.slide_number !==
-                null
-              ? `Slide ${result.slide_number}`
-              : "Document";
+  if (results.length === 0) {
+    return "No directly relevant uploaded document content was found.";
+  }
 
-        return [
-          `[CONTEXT ${index + 1}]`,
-          `Title: ${result.title}`,
-          `Source: ${path.basename(
-            result.source_file,
-          )}`,
-          `Location: ${location}`,
-          `Section: ${result.section}`,
-          "Content:",
-          result.content,
-        ].join("\n");
-      },
-    )
+  return results
+    .map((result, index) => {
+      const location =
+        result.page_number !== null
+          ? `Page ${result.page_number}`
+          : result.slide_number !==
+              null
+            ? `Slide ${result.slide_number}`
+            : "Document";
+
+      return [
+        `[DOCUMENT ${index + 1}]`,
+        `Title: ${result.title}`,
+        `Source: ${result.source_file}`,
+        `Location: ${location}`,
+        `Section: ${result.section}`,
+        `Metadata: ${JSON.stringify(
+          result.metadata,
+        )}`,
+        "Content:",
+        result.content,
+      ].join("\n");
+    })
     .join(
       "\n\n--------------------\n\n",
     );
@@ -760,66 +731,27 @@ function buildContext(
 function buildSources(
   results: SearchResult[],
 ): ChatSource[] {
-  const seen =
-    new Set<string>();
-
-  const sources:
-    ChatSource[] = [];
-
-  for (const result of results) {
-    const key = [
-      result.source_file,
-      result.page_number,
-      result.slide_number,
+  return results.map((result) => ({
+    chunkId:
+      result.chunk_id,
+    title:
       result.title,
+    file:
+      result.source_file,
+    page:
+      result.page_number,
+    slide:
+      result.slide_number,
+    section:
       result.section,
-    ].join("|");
-
-    if (seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-
-    sources.push({
-      chunkId:
-        result.chunk_id,
-
-      title:
-        result.title,
-
-      file:
-        path.basename(
-          result.source_file,
-        ),
-
-      page:
-        result.page_number,
-
-      slide:
-        result.slide_number,
-
-      section:
-        result.section,
-
-      similarity:
-        result.similarity,
-    });
-  }
-
-  return sources;
+    similarity:
+      result.similarity,
+  }));
 }
 
 function buildImages(
   results: SearchResult[],
-  maxImages = 2,
 ): ChatImage[] {
-  const seenPaths =
-    new Set<string>();
-
-  const images:
-    ChatImage[] = [];
-
   for (const result of results) {
     if (
       !result.should_display_image ||
@@ -828,86 +760,248 @@ function buildImages(
       continue;
     }
 
-    for (
-      const imagePath
-      of result.image_paths
-    ) {
-      if (
-        !imagePath ||
-        seenPaths.has(
-          imagePath,
-        )
-      ) {
-        continue;
-      }
+    const imagePath =
+      result.image_paths[0];
 
-      seenPaths.add(imagePath);
+    if (!imagePath) {
+      continue;
+    }
 
-      const sourceFile =
-        path.basename(
-          result.source_file,
-        );
-
-      const location =
-        result.page_number !== null
-          ? `page ${result.page_number}`
-          : result.slide_number !== null
-            ? `slide ${result.slide_number}`
-            : "document";
-
-      images.push({
+    return [
+      {
         url:
-          `/api/source-image?path=${encodeURIComponent(
-            imagePath,
-          )}`,
-
+          imagePath.startsWith("/")
+            ? imagePath
+            : `/${imagePath}`,
         path:
           imagePath,
-
         caption:
-          `${result.title} — ${sourceFile}, ${location}`,
-
-        sourceFile,
-
+          result.title,
+        sourceFile:
+          result.source_file,
         page:
           result.page_number,
-
         slide:
           result.slide_number,
-      });
-
-      if (
-        images.length >=
-        maxImages
-      ) {
-        return images;
-      }
-    }
+      },
+    ];
   }
 
-  return images;
+  return [];
 }
 
-function clarificationResponse(
-  answer: string,
-) {
-  return Response.json({
-    answer,
-    reply: answer,
-    grounded: false,
-    sources: [],
-    images: [],
-    generation:
-      routerGeneration(),
+function chooseBestResult(
+  results: SearchResult[],
+  stepNumber?: number,
+): SearchResult | null {
+  let candidates =
+    [...results];
+
+  if (
+    stepNumber !== undefined
+  ) {
+    candidates =
+      candidates.filter(
+        (result) =>
+          readMetadataNumber(
+            result,
+            "step_number",
+          ) === stepNumber,
+      );
+  }
+
+  if (
+    candidates.length === 0
+  ) {
+    return null;
+  }
+
+  candidates.sort(
+    (first, second) =>
+      second.similarity -
+      first.similarity,
+  );
+
+  return candidates[0];
+}
+
+async function searchExactStep(
+  question: string,
+  stepNumber: number,
+  topic?: SearchIntent["topic"],
+): Promise<SearchResult[]> {
+  return searchDocuments(
+    question,
+    {
+      matchCount: 20,
+      matchThreshold: 0.01,
+      filters: {
+        stepNumber,
+        ...(topic
+          ? { topic }
+          : {}),
+      },
+    },
+  );
+}
+
+async function retrieveGeneralResults(
+  question: string,
+  wantsImage: boolean,
+): Promise<SearchResult[]> {
+  if (wantsImage) {
+    const imageResults =
+      await searchDocuments(
+        question,
+        {
+          matchCount: 12,
+          matchThreshold: 0.05,
+          filters: {
+            wantsImage: true,
+          },
+        },
+      );
+
+    const bestImageResult =
+      chooseBestResult(
+        imageResults,
+      );
+
+    return bestImageResult
+      ? [bestImageResult]
+      : [];
+  }
+
+  return searchDocuments(
+    question,
+    {
+      matchCount: 6,
+      matchThreshold: 0.15,
+    },
+  );
+}
+
+async function retrieveFullGuide(
+  question: string,
+  topic: Exclude<SearchIntent["topic"], null>,
+): Promise<SearchResult[]> {
+  const contentType =
+    topic === "microbit-build"
+      ? "build-step"
+      : "pairing-step";
+
+  const results =
+    await searchDocuments(
+      `${question} ${topic} complete guide all numbered steps`,
+      {
+        matchCount: 20,
+        matchThreshold: -1,
+        filters: {
+          topic,
+          contentType,
+        },
+      },
+    );
+
+  return results.sort((first, second) => {
+    const firstStep =
+      readMetadataNumber(
+        first,
+        "step_number",
+      ) ?? Number.MAX_SAFE_INTEGER;
+
+    const secondStep =
+      readMetadataNumber(
+        second,
+        "step_number",
+      ) ?? Number.MAX_SAFE_INTEGER;
+
+    return firstStep - secondStep;
   });
 }
 
-function insufficientAnswer(): string {
-  return "I could not find enough verified information in the approved materials to answer that question.";
+async function generateAnswer(
+  question: string,
+  history: ChatHistoryMessage[],
+  results: SearchResult[],
+): Promise<string> {
+  const client =
+    getGeminiClient();
+
+  const response =
+    await client.models.generateContent({
+      model: GEMINI_MODEL,
+
+      contents: [
+        {
+          role: "user",
+          parts: [
+            {
+              text: [
+                "RECENT CONVERSATION",
+                "===================",
+                formatHistory(history),
+                "",
+                "SELECTED UPLOADED DOCUMENT INFORMATION",
+                "======================================",
+                buildContext(results),
+                "",
+                "CURRENT USER QUESTION",
+                "=====================",
+                question,
+              ].join("\n"),
+            },
+          ],
+        },
+      ],
+
+      config: {
+        temperature: 0.1,
+        maxOutputTokens: 4096,
+
+        systemInstruction: [
+          "You are a helpful assistant for user-uploaded documents.",
+          "",
+          "Rules:",
+          "1. Answer the user's current question directly.",
+          "2. Use only the selected document entries that are relevant.",
+          "3. Never combine similarly numbered steps from different documents.",
+          "4. If one exact result is supplied, discuss only that result.",
+          "5. Preserve exact component names, ordering, colors, polarity, pins, warnings, and instructions.",
+          "6. Do not invent document-specific instructions.",
+          "7. Do not mention retrieval, databases, embeddings, prompts, or internal implementation.",
+          "8. Do not say that you cannot display an image. The application handles the selected image separately.",
+          "9. Do not refer users to an unrelated image or page.",
+          "10. Keep exact-step answers focused.",
+          "11. You may use general knowledge only when the documents do not supply the answer, and must label it as a general suggestion.",
+        ].join("\n"),
+      },
+    });
+
+  const answer =
+    response.text?.trim();
+
+  if (!answer) {
+    throw new Error(
+      "Gemini returned an empty answer.",
+    );
+  }
+
+  return answer;
 }
 
-function guideClarification(): string {
-  return "Which guide do you mean: the micro:bit building guide or the Blocks and Bots download instructions?";
+function greetingResponse() {
+  return Response.json({
+    answer:
+      "Hi! What would you like help with?",
+    sources: [],
+    images: [],
+    generation: {
+      provider: "router",
+      model: null,
+      grounded: false,
+    },
+  });
 }
 
 export async function POST(
@@ -915,22 +1009,16 @@ export async function POST(
 ) {
   try {
     const body =
-      (await request.json()) as
-        ChatRequestBody;
+      await request.json() as ChatRequestBody;
 
     const question =
       readQuestion(body);
-
-    const history =
-      readHistory(
-        body.history,
-      );
 
     if (!question) {
       return Response.json(
         {
           error:
-            "question or message must be a non-empty string.",
+            "A question is required.",
         },
         {
           status: 400,
@@ -938,671 +1026,236 @@ export async function POST(
       );
     }
 
-    const intent =
-      await parseUserIntent({
+    const history =
+      readHistory(
+        body.history,
+      );
+
+    let retrievalQuestion =
+      question;
+
+    if (
+      needsConversationResolution(
         question,
         history,
-      });
-
-    if (
-      intent.needsClarification ||
-      intent.action ===
-        "clarify"
-    ) {
-      return clarificationResponse(
-        intent.clarificationQuestion ??
-        "Could you clarify which guide, lesson, step, or image you mean?",
-      );
-    }
-
-    const resolvedTopic =
-      resolveGuideTopic(
-        intent,
-        history,
-      );
-
-    const requestedStep =
-      resolveRequestedStep(
-        intent,
-        history,
-      );
-
-    /*
-     * Exact curriculum lesson.
-     *
-     * Combines the main lesson plan, that Lesson's
-     * supplement slides, and that Lesson's journal
-     * materials. Only matching supplement/journal
-     * visuals are displayed.
-     */
-    if (
-      intent.action ===
-        "exact-lesson" ||
-      intent.lessonNumber !==
-        null
-    ) {
-      const lessonNumber =
-        intent.lessonNumber;
-
-      if (lessonNumber === null) {
-        return clarificationResponse(
-          "Which lesson number do you mean?",
-        );
-      }
-
-      const lessonBundle =
-        await searchLessonBundle(
-          lessonNumber,
-        );
-
-      if (
-        lessonBundle.all.length ===
-        0
-      ) {
-        const answer =
-          `I could not find Lesson ${lessonNumber} in the approved curriculum materials.`;
-
-        return Response.json({
-          answer,
-          reply: answer,
-          grounded: false,
-          sources: [],
-          images: [],
-          generation:
-            approvedGeneration(),
-        });
-      }
-
-      const lessonImages =
-        buildImages(
-          lessonBundle.visualResults,
-          6,
-        );
-
-      const answer =
-        await generateGroundedLessonAnswer({
-          question:
-            intent.normalizedQuestion,
-
-          lessonNumber,
-
-          context:
-            buildContext(
-              lessonBundle.all,
-            ),
-
-          history,
-
-          primaryCount:
-            lessonBundle.primary.length,
-
-          supplementCount:
-            lessonBundle.supplements.length,
-
-          journalCount:
-            lessonBundle.journal.length,
-
-          visualCount:
-            lessonImages.length,
-        });
-
-      return Response.json({
-        answer,
-        reply: answer,
-        grounded: true,
-
-        sources:
-          buildSources(
-            lessonBundle.all,
-          ),
-
-        /*
-         * Exact Lesson questions automatically show
-         * that Lesson's approved supplement/journal
-         * visuals, even when the user did not type
-         * the word "image".
-         */
-        images:
-          lessonImages,
-
-        generation:
-          geminiGeneration(),
-      });
-    }
-
-    /*
-     * All step images, optionally beginning at a
-     * specific step and continuing through the end.
-     */
-    if (
-      intent.action ===
-      "show-image-sequence"
-    ) {
-      if (
-        resolvedTopic !==
-          "microbit-build" &&
-        resolvedTopic !==
-          "download-instructions"
-      ) {
-        return clarificationResponse(
-          guideClarification(),
-        );
-      }
-
-      const procedureSteps =
-        resolvedTopic ===
-        "microbit-build"
-          ? await searchBuildSteps()
-          : await searchDownloadSteps();
-
-      const startStep =
-        requestedStep ?? 1;
-
-      const selectedSteps =
-        procedureSteps.filter(
-          (step) => {
-            const number =
-              extractStepNumber(
-                [
-                  step.title,
-                  step.section,
-                ].join(" "),
-              );
-
-            return (
-              number !== null &&
-              number >=
-                startStep
-            );
-          },
-        );
-
-      const images =
-        buildImages(
-          selectedSteps,
-          Math.max(
-            selectedSteps.length,
-            1,
-          ),
-        );
-
-      if (images.length === 0) {
-        const answer =
-          "I could not find approved images for the requested steps.";
-
-        return Response.json({
-          answer,
-          reply: answer,
-          grounded: false,
-          sources: [],
-          images: [],
-          generation:
-            approvedGeneration(),
-        });
-      }
-
-      const firstNumber =
-        extractStepNumber(
-          selectedSteps[0]?.title ??
-          "",
-        );
-
-      const lastNumber =
-        extractStepNumber(
-          selectedSteps[
-            selectedSteps.length - 1
-          ]?.title ?? "",
-        );
-
-      const answer =
-        `Here are the approved images from Step ${firstNumber} through Step ${lastNumber}.`;
-
-      return Response.json({
-        answer,
-        reply: answer,
-        grounded: true,
-
-        sources:
-          buildSources(
-            selectedSteps,
-          ),
-
-        images,
-
-        generation:
-          approvedGeneration(),
-      });
-    }
-
-    /*
-     * One exact step, a next/previous follow-up, or
-     * a request for one numbered step image.
-     */
-    if (
-      intent.action ===
-        "exact-step" ||
-      intent.action ===
-        "next-step" ||
-      intent.action ===
-        "previous-step" ||
-      (
-        intent.action ===
-          "show-image" &&
-        requestedStep !== null
       )
     ) {
-      if (requestedStep === null) {
-        return clarificationResponse(
-          "Which step number do you mean?",
-        );
-      }
+      const resolvedIntent =
+        await parseUserIntent({
+          question,
+          history,
+        });
 
       if (
-        resolvedTopic !==
-          "microbit-build" &&
-        resolvedTopic !==
-          "download-instructions"
+        resolvedIntent.needsClarification &&
+        resolvedIntent.clarificationQuestion
       ) {
-        return clarificationResponse(
-          guideClarification(),
-        );
-      }
-
-      const procedureSteps =
-        resolvedTopic ===
-        "microbit-build"
-          ? await searchBuildSteps()
-          : await searchDownloadSteps();
-
-      const exactStep =
-        procedureSteps.find(
-          (step) =>
-            extractStepNumber(
-              [
-                step.title,
-                step.section,
-              ].join(" "),
-            ) ===
-            requestedStep,
-        );
-
-      if (!exactStep) {
-        const answer =
-          `I could not find Step ${requestedStep} in the approved guide.`;
-
         return Response.json({
-          answer,
-          reply: answer,
-          grounded: false,
+          answer:
+            resolvedIntent.clarificationQuestion,
           sources: [],
           images: [],
-          generation:
-            approvedGeneration(),
+          generation: {
+            provider: "router",
+            model: GEMINI_MODEL,
+            grounded: false,
+          },
         });
       }
 
-      /*
-       * A pure image request does not need a second
-       * Gemini call. Return the approved image directly.
-       */
-      if (
-        intent.action ===
-        "show-image"
-      ) {
-        const images =
-          buildImages(
-            [exactStep],
-            1,
+      retrievalQuestion =
+        resolvedIntent.normalizedQuestion;
+    }
+
+    const intent =
+      analyzeQuestion(
+        retrievalQuestion,
+      );
+
+    if (intent.isGreeting) {
+      return greetingResponse();
+    }
+
+    let results: SearchResult[] =
+      [];
+
+    /*
+     * Resolve a user's reply to a previous
+     * clarification:
+     *
+     * 1
+     * 1.
+     * 1. Document name
+     */
+    const pendingClarification =
+      findPendingClarification(
+        history,
+      );
+
+    if (
+      intent.wantsFullGuide &&
+      intent.topic !== null
+    ) {
+      results =
+        await retrieveFullGuide(
+          retrievalQuestion,
+          intent.topic,
+        );
+    } else if (
+      pendingClarification &&
+      intent.choiceNumber !== null
+    ) {
+      const exactResults =
+        await searchExactStep(
+          pendingClarification.originalQuestion,
+          pendingClarification.stepNumber,
+          analyzeQuestion(
+            pendingClarification.originalQuestion,
+          ).topic,
+        );
+
+      const groups =
+        groupResultsByDocument(
+          exactResults,
+        );
+
+      const selectedGroup =
+        groups[
+          intent.choiceNumber - 1
+        ];
+
+      if (!selectedGroup) {
+        return Response.json({
+          answer:
+            `Please choose a number between 1 and ${groups.length}.`,
+          sources: [],
+          images: [],
+          generation: {
+            provider: "router",
+            model: null,
+            grounded: false,
+          },
+        });
+      }
+
+      const bestResult =
+        chooseBestResult(
+          selectedGroup.results,
+          pendingClarification.stepNumber,
+        );
+
+      results =
+        bestResult
+          ? [bestResult]
+          : [];
+    } else if (
+      intent.stepNumber !== null
+    ) {
+      const exactResults =
+        await searchExactStep(
+          retrievalQuestion,
+          intent.stepNumber,
+          intent.topic,
+        );
+
+      const groups =
+        groupResultsByDocument(
+          exactResults,
+        );
+
+      if (groups.length > 1) {
+        const conversationGroup =
+          findGroupFromConversation(
+            groups,
+            question,
+            history,
           );
 
-        if (images.length === 0) {
-          const answer =
-            `I found ${exactStep.title}, but no approved image was available for it.`;
-
+        if (!conversationGroup) {
           return Response.json({
-            answer,
-            reply: answer,
-            grounded: false,
-            sources:
-              buildSources([
-                exactStep,
-              ]),
+            answer:
+              createClarificationAnswer(
+                intent.stepNumber,
+                groups,
+              ),
+            sources: [],
             images: [],
-            generation:
-              approvedGeneration(),
+            generation: {
+              provider: "router",
+              model: null,
+              grounded: false,
+            },
           });
         }
 
-        const answer =
-          `Here is the approved image for ${exactStep.title}.`;
+        const bestResult =
+          chooseBestResult(
+            conversationGroup.results,
+            intent.stepNumber,
+          );
 
-        return Response.json({
-          answer,
-          reply: answer,
-          grounded: true,
-
-          sources:
-            buildSources([
-              exactStep,
-            ]),
-
-          images,
-
-          generation:
-            approvedGeneration(),
-        });
-      }
-
-      const guideName =
-        resolvedTopic ===
-        "microbit-build"
-          ? "micro:bit building guide"
-          : "Blocks and Bots download instructions";
-
-      const answer =
-        await generateGroundedStepAnswer({
-          question:
-            intent.normalizedQuestion,
-
-          guideName,
-
-          title:
-            exactStep.title,
-
-          context:
-            buildContext([
-              exactStep,
-            ]),
-
-          /*
-           * Gemini may use the approved image to
-           * understand the step, but the frontend only
-           * displays it when the user requested an image.
-           */
-          imagePath:
-            exactStep.image_paths[0] ??
-            null,
-
-          history,
-        });
-
-      return Response.json({
-        answer,
-        reply: answer,
-        grounded: true,
-
-        sources:
-          buildSources([
-            exactStep,
-          ]),
-
-        images:
-          intent.wantsImage
-            ? buildImages(
-                [exactStep],
-                1,
-              )
-            : [],
-
-        generation:
-          geminiGeneration(),
-      });
-    }
-
-    /*
-     * Complete guide.
-     */
-    if (
-      intent.action ===
-      "full-guide"
-    ) {
-      if (
-        resolvedTopic !==
-          "microbit-build" &&
-        resolvedTopic !==
-          "download-instructions"
+        results =
+          bestResult
+            ? [bestResult]
+            : [];
+      } else if (
+        groups.length === 1
       ) {
-        return clarificationResponse(
-          guideClarification(),
-        );
+        const bestResult =
+          chooseBestResult(
+            groups[0].results,
+            intent.stepNumber,
+          );
+
+        results =
+          bestResult
+            ? [bestResult]
+            : [];
       }
-
-      const guideSteps =
-        resolvedTopic ===
-        "microbit-build"
-          ? await searchBuildSteps()
-          : await searchDownloadSteps();
-
-      if (
-        guideSteps.length === 0
-      ) {
-        const answer =
-          insufficientAnswer();
-
-        return Response.json({
-          answer,
-          reply: answer,
-          grounded: false,
-          sources: [],
-          images: [],
-          generation:
-            approvedGeneration(),
-        });
-      }
-
-      const answer =
-        resolvedTopic ===
-        "microbit-build"
-          ? await generateGroundedBuildGuide({
-              question:
-                intent.normalizedQuestion,
-
-              steps:
-                guideSteps.map(
-                  (step) => ({
-                    title:
-                      step.title,
-
-                    content:
-                      step.content,
-
-                    imagePath:
-                      step.image_paths[0] ??
-                      null,
-                  }),
-                ),
-
-              history,
-            })
-          : await generateGroundedAnswer({
-              question:
-                intent.normalizedQuestion,
-
-              context:
-                buildContext(
-                  guideSteps,
-                ),
-
-              history,
-            });
-
-      return Response.json({
-        answer,
-        reply: answer,
-        grounded: true,
-
-        sources:
-          buildSources(
-            guideSteps,
-          ),
-
-        images:
-          intent.wantsImage
-            ? buildImages(
-                guideSteps,
-                guideSteps.length,
-              )
-            : [],
-
-        generation:
-          geminiGeneration(),
-      });
-    }
-
-    /*
-     * General grounded retrieval, including
-     * misspelled troubleshooting questions.
-     */
-    const retrievalQuestion =
-      buildRetrievalQuestion(
-        intent,
-      );
-
-    const searchResults =
-      await searchDocuments(
-        retrievalQuestion,
-        {
-          matchCount:
-            intent.action ===
-            "troubleshoot"
-              ? 20
-              : 12,
-
-          matchThreshold:
-            intent.wantsImage ||
-            intent.action ===
-              "troubleshoot"
-              ? 0.2
-              : 0.3,
-        },
-      );
-
-    /*
-     * A non-numbered image request uses semantic
-     * retrieval, but only returns approved images.
-     */
-    if (
-      intent.action ===
-        "show-image" ||
-      intent.wantsImage
-    ) {
-      const imageResults =
-        chooseImageResults(
-          searchResults,
-          intent,
-          2,
+    } else {
+      results =
+        await retrieveGeneralResults(
+          retrievalQuestion,
+          intent.wantsImage,
         );
-
-      const images =
-        buildImages(
-          imageResults,
-          2,
-        );
-
-      if (images.length === 0) {
-        const answer =
-          "I found related approved information, but no approved image was available to display.";
-
-        return Response.json({
-          answer,
-          reply: answer,
-          grounded: false,
-          sources: [],
-          images: [],
-          generation:
-            approvedGeneration(),
-        });
-      }
-
-      const answer =
-        images.length === 1
-          ? "Here is the approved reference image."
-          : "Here are the approved reference images.";
-
-      return Response.json({
-        answer,
-        reply: answer,
-        grounded: true,
-
-        sources:
-          buildSources(
-            imageResults,
-          ),
-
-        images,
-
-        generation:
-          approvedGeneration(),
-      });
-    }
-
-    const contextResults =
-      chooseTextContextResults(
-        searchResults,
-        intent.action,
-      );
-
-    if (
-      contextResults.length === 0
-    ) {
-      const answer =
-        insufficientAnswer();
-
-      return Response.json({
-        answer,
-        reply: answer,
-        grounded: false,
-        sources: [],
-        images: [],
-        generation:
-          approvedGeneration(),
-      });
     }
 
     const answer =
-      await generateGroundedAnswer({
-        question:
-          intent.normalizedQuestion,
-
-        context:
-          buildContext(
-            contextResults,
-          ),
-
+      await generateAnswer(
+        question,
         history,
-      });
+        results,
+      );
 
     return Response.json({
       answer,
-      reply: answer,
-      grounded: true,
-
       sources:
-        buildSources(
-          contextResults,
-        ),
-
-      /*
-       * Never display images for an ordinary text
-       * answer unless the user explicitly requested one.
-       */
-      images: [],
-
-      generation:
-        geminiGeneration(),
+        buildSources(results),
+      images:
+        buildImages(results),
+      generation: {
+        provider: "gemini",
+        model: GEMINI_MODEL,
+        grounded:
+          results.length > 0,
+      },
     });
   } catch (error: unknown) {
     console.error(
-      "Chat request failed:",
+      "[Chat] Request failed:",
       error,
     );
 
     return Response.json(
       {
         error:
+          "The assistant could not answer this question.",
+        details:
+          process.env.NODE_ENV ===
+          "development" &&
           error instanceof Error
             ? error.message
-            : "The chat request failed.",
+            : undefined,
       },
       {
         status: 500,

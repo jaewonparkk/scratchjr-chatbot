@@ -24,254 +24,302 @@ export type SearchResult = {
   similarity: number;
 };
 
-type SearchOptions = {
-  matchCount?: number;
-  matchThreshold?: number;
+export type SearchFilters = {
+  topic?: string;
+  contentType?: string;
+  stepNumber?: number;
+  documentType?: string;
+  wantsImage?: boolean;
 };
 
-const DOCUMENT_COLUMNS = [
-  "id",
-  "chunk_id",
-  "title",
-  "content",
-  "source_file",
-  "file_type",
-  "section",
-  "page_number",
-  "slide_number",
-  "image_paths",
-  "should_display_image",
-  "metadata",
-].join(",");
+export type SearchOptions = {
+  matchCount?: number;
+  matchThreshold?: number;
+  filters?: SearchFilters;
+};
+
+function normalizeFileType(
+  value: unknown,
+): SearchResult["file_type"] {
+  if (
+    value === "docx" ||
+    value === "pdf" ||
+    value === "pptx" ||
+    value === "image" ||
+    value === "markdown"
+  ) {
+    return value;
+  }
+
+  return "pdf";
+}
 
 function normalizeResult(
   result: Partial<SearchResult>,
 ): SearchResult {
   return {
     id: Number(result.id ?? 0),
-    chunk_id: result.chunk_id ?? "",
+
+    chunk_id:
+      typeof result.chunk_id === "string"
+        ? result.chunk_id
+        : "",
+
     title:
-      result.title ??
-      "Untitled document",
-    content: result.content ?? "",
+      typeof result.title === "string" &&
+      result.title.trim()
+        ? result.title.trim()
+        : "Untitled document",
+
+    content:
+      typeof result.content === "string"
+        ? result.content.trim()
+        : "",
+
     source_file:
-      result.source_file ?? "",
-    file_type:
-      result.file_type ?? "docx",
-    section: result.section ?? "",
+      typeof result.source_file === "string"
+        ? result.source_file
+        : "",
+
+    file_type: normalizeFileType(
+      result.file_type,
+    ),
+
+    section:
+      typeof result.section === "string"
+        ? result.section
+        : "",
+
     page_number:
-      result.page_number ?? null,
+      typeof result.page_number === "number"
+        ? result.page_number
+        : null,
+
     slide_number:
-      result.slide_number ?? null,
+      typeof result.slide_number === "number"
+        ? result.slide_number
+        : null,
+
     image_paths: Array.isArray(
       result.image_paths,
     )
-      ? result.image_paths
+      ? result.image_paths.filter(
+          (value): value is string =>
+            typeof value === "string" &&
+            value.trim().length > 0,
+        )
       : [],
+
     should_display_image: Boolean(
       result.should_display_image,
     ),
+
     metadata:
       result.metadata &&
-      typeof result.metadata ===
-        "object"
+      typeof result.metadata === "object" &&
+      !Array.isArray(result.metadata)
         ? result.metadata
         : {},
+
     similarity: Number(
-      result.similarity ?? 1,
+      result.similarity ?? 0,
     ),
   };
+}
+
+function readMetadataString(
+  metadata: Record<string, unknown>,
+  key: string,
+): string | null {
+  const value = metadata[key];
+
+  if (
+    typeof value === "string" &&
+    value.trim()
+  ) {
+    return value.trim();
+  }
+
+  return null;
+}
+
+function readMetadataNumber(
+  metadata: Record<string, unknown>,
+  key: string,
+): number | null {
+  const value = metadata[key];
+
+  if (
+    typeof value === "number" &&
+    Number.isFinite(value)
+  ) {
+    return value;
+  }
+
+  if (
+    typeof value === "string" &&
+    value.trim()
+  ) {
+    const parsed = Number(value);
+
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function matchesFilters(
+  result: SearchResult,
+  filters?: SearchFilters,
+): boolean {
+  if (!filters) {
+    return true;
+  }
+
+  const metadata = result.metadata;
+
+  if (filters.topic) {
+    const topic = readMetadataString(
+      metadata,
+      "topic",
+    );
+
+    if (topic !== filters.topic) {
+      return false;
+    }
+  }
+
+  if (filters.contentType) {
+    const contentType =
+      readMetadataString(
+        metadata,
+        "content_type",
+      );
+
+    if (
+      contentType !==
+      filters.contentType
+    ) {
+      return false;
+    }
+  }
+
+  if (filters.documentType) {
+    const documentType =
+      readMetadataString(
+        metadata,
+        "document_type",
+      );
+
+    if (
+      documentType !==
+      filters.documentType
+    ) {
+      return false;
+    }
+  }
+
+  if (
+    filters.stepNumber !== undefined
+  ) {
+    const stepNumber =
+      readMetadataNumber(
+        metadata,
+        "step_number",
+      );
+
+    if (
+      stepNumber !==
+      filters.stepNumber
+    ) {
+      return false;
+    }
+  }
+
+  if (
+    filters.wantsImage === true &&
+    (
+      !result.should_display_image ||
+      result.image_paths.length === 0
+    )
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 function createDeduplicationKey(
   result: SearchResult,
 ): string {
-  return result.content
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const normalizedContent =
+    result.content
+      .toLowerCase()
+      .replace(
+        /[^\p{L}\p{N}]+/gu,
+        " ",
+      )
+      .replace(/\s+/g, " ")
+      .trim();
+
+  if (normalizedContent) {
+    return normalizedContent;
+  }
+
+  return [
+    result.title,
+    result.source_file,
+    result.page_number ?? "",
+    result.slide_number ?? "",
+  ]
+    .join("|")
+    .toLowerCase();
 }
 
-function removeDuplicateResults(
+function deduplicateResults(
   results: SearchResult[],
   limit: number,
 ): SearchResult[] {
-  const seenContent =
+  const seen =
     new Set<string>();
 
-  const uniqueResults: SearchResult[] =
-    [];
+  const output:
+    SearchResult[] = [];
 
   for (const result of results) {
     const key =
-      createDeduplicationKey(result);
-
-    if (!key) {
-      continue;
-    }
-
-    if (seenContent.has(key)) {
-      continue;
-    }
-
-    seenContent.add(key);
-    uniqueResults.push(result);
+      createDeduplicationKey(
+        result,
+      );
 
     if (
-      uniqueResults.length >= limit
+      !key ||
+      seen.has(key)
+    ) {
+      continue;
+    }
+
+    seen.add(key);
+    output.push(result);
+
+    if (
+      output.length >= limit
     ) {
       break;
     }
   }
 
-  return uniqueResults;
+  return output;
 }
 
-export function extractStepNumber(
-  text: string,
-): number | null {
-  const match = text.match(
-    /\bstep\s*#?\s*(\d{1,2})\b/i,
-  );
-
-  if (!match) {
-    return null;
-  }
-
-  const stepNumber = Number(
-    match[1],
-  );
-
-  if (
-    !Number.isInteger(stepNumber)
-  ) {
-    return null;
-  }
-
-  return stepNumber;
-}
-
-/*
- * Numbered micro:bit build steps should not rely on
- * semantic vector similarity.
- *
- * This directly fetches the approved build-guide pages
- * and orders them by their actual step numbers.
- */
-export async function searchBuildSteps(): Promise<
-  SearchResult[]
-> {
-  const {
-    data,
-    error,
-  } = await supabaseAdmin
-    .from("documents")
-    .select(DOCUMENT_COLUMNS)
-    .ilike(
-      "source_file",
-      "%BotsBuildFeb2026.pdf%",
-    )
-    .ilike(
-      "title",
-      "Step %",
-    )
-    .order(
-      "page_number",
-      {
-        ascending: true,
-        nullsFirst: false,
-      },
-    );
-
-  if (error) {
-    throw new Error(
-      `Build-step search failed: ${error.message}`,
-    );
-  }
-
-  if (!Array.isArray(data)) {
-    return [];
-  }
-
-  const normalizedResults =
-    data
-      .map((result) =>
-        normalizeResult(
-          result as Partial<SearchResult>,
-        ),
-      )
-      .filter(
-        (result) =>
-          extractStepNumber(
-            result.title,
-          ) !== null,
-      );
-
-  normalizedResults.sort(
-    (first, second) => {
-      const firstStep =
-        extractStepNumber(
-          first.title,
-        ) ?? Number.MAX_SAFE_INTEGER;
-
-      const secondStep =
-        extractStepNumber(
-          second.title,
-        ) ?? Number.MAX_SAFE_INTEGER;
-
-      return firstStep - secondStep;
-    },
-  );
-
-  /*
-   * Keep only one approved chunk per step.
-   */
-  const resultsByStep =
-    new Map<number, SearchResult>();
-
-  for (
-    const result
-    of normalizedResults
-  ) {
-    const stepNumber =
-      extractStepNumber(
-        result.title,
-      );
-
-    if (
-      stepNumber === null ||
-      resultsByStep.has(
-        stepNumber,
-      )
-    ) {
-      continue;
-    }
-
-    resultsByStep.set(
-      stepNumber,
-      result,
-    );
-  }
-
-  return Array.from(
-    resultsByStep.values(),
-  );
-}
-
-export async function searchDocuments(
-  question: string,
-  options: SearchOptions = {},
-): Promise<SearchResult[]> {
-  const normalizedQuestion =
-    question.trim();
-
-  if (!normalizedQuestion) {
-    throw new Error(
-      "Question cannot be empty.",
-    );
-  }
-
+function validateSearchOptions(
+  options: SearchOptions,
+): {
+  matchCount: number;
+  matchThreshold: number;
+} {
   const matchCount =
     options.matchCount ?? 5;
 
@@ -300,18 +348,90 @@ export async function searchDocuments(
     );
   }
 
+  return {
+    matchCount,
+    matchThreshold,
+  };
+}
+
+export function getResultStepNumber(
+  result: SearchResult,
+): number | null {
+  const metadataStep =
+    readMetadataNumber(
+      result.metadata,
+      "step_number",
+    );
+
+  if (
+    metadataStep !== null &&
+    Number.isInteger(metadataStep) &&
+    metadataStep >= 1
+  ) {
+    return metadataStep;
+  }
+
+  const searchableText = [
+    result.title,
+    result.section,
+    result.content,
+  ].join(" ");
+
+  const match =
+    searchableText.match(
+      /\bstep\s*#?\s*(\d{1,3})\b/i,
+    );
+
+  if (!match) {
+    return null;
+  }
+
+  const stepNumber =
+    Number(match[1]);
+
+  if (
+    !Number.isInteger(stepNumber) ||
+    stepNumber < 1
+  ) {
+    return null;
+  }
+
+  return stepNumber;
+}
+
+export async function searchDocuments(
+  question: string,
+  options: SearchOptions = {},
+): Promise<SearchResult[]> {
+  const normalizedQuestion =
+    question.trim();
+
+  if (!normalizedQuestion) {
+    throw new Error(
+      "Question cannot be empty.",
+    );
+  }
+
+  const {
+    matchCount,
+    matchThreshold,
+  } = validateSearchOptions(
+    options,
+  );
+
   const queryEmbedding =
     await createQueryEmbedding(
       normalizedQuestion,
     );
 
-  const candidateCount = Math.min(
-    Math.max(
-      matchCount * 4,
-      12,
-    ),
-    50,
-  );
+  const candidateCount =
+    Math.min(
+      Math.max(
+        matchCount * 8,
+        24,
+      ),
+      100,
+    );
 
   const {
     data,
@@ -321,8 +441,10 @@ export async function searchDocuments(
     {
       query_embedding:
         queryEmbedding,
+
       match_threshold:
         matchThreshold,
+
       match_count:
         candidateCount,
     },
@@ -339,14 +461,35 @@ export async function searchDocuments(
   }
 
   const normalizedResults =
-    data.map(
-      (
-        result: Partial<SearchResult>,
-      ) => normalizeResult(result),
+    data
+      .map(
+        (
+          result: Partial<SearchResult>,
+        ) =>
+          normalizeResult(result),
+      )
+      .filter(
+        (result) =>
+          result.content.length > 0,
+      );
+
+  const filteredResults =
+    normalizedResults.filter(
+      (result) =>
+        matchesFilters(
+          result,
+          options.filters,
+        ),
     );
 
-  return removeDuplicateResults(
-    normalizedResults,
+  filteredResults.sort(
+    (first, second) =>
+      second.similarity -
+      first.similarity,
+  );
+
+  return deduplicateResults(
+    filteredResults,
     matchCount,
   );
 }

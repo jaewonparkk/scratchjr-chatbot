@@ -1,19 +1,152 @@
-.page {
+  .page {
     min-height: 100vh;
     padding: 70px 24px;
     background: #f5f5f3;
     color: #202020;
   }
+
+  .workspace {
+    display: grid;
+    grid-template-columns: 300px minmax(0, 900px);
+    width: min(1220px, 100%);
+    min-height: 820px;
+    margin: 0 auto;
+    border: 1px solid #d8d8d8;
+    background: #ffffff;
+  }
+
+  .researcher {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 24px;
+    background: #eef3f6;
+    border-right: 1px solid #d8d8d8;
+  }
+
+  .eyebrow {
+    color: #527087;
+    font-size: 12px;
+    font-weight: 750;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .researcher h2 {
+    margin: 7px 0 6px;
+    font-size: 25px;
+  }
+
+  .researcher p {
+    margin: 0;
+    color: #52616d;
+    line-height: 1.45;
+  }
+
+  .uploadButton {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 48px;
+    padding: 10px 16px;
+    color: #ffffff;
+    background: #245477;
+    border-radius: 10px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .uploadButton:hover {
+    background: #193f5d;
+  }
+
+  .uploadButton input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    opacity: 0;
+  }
+
+  .researcher .fileHint {
+    margin-top: -10px;
+    font-size: 12px;
+  }
+
+  .researcher .uploadSuccess {
+    padding: 10px 12px;
+    color: #245b3c;
+    background: #e2f2e8;
+    border-radius: 8px;
+    font-size: 13px;
+  }
+
+  .researcher .uploadError {
+    padding: 10px 12px;
+    color: #8d2929;
+    background: #f8e5e5;
+    border-radius: 8px;
+    font-size: 13px;
+  }
+
+  .researcherFiles {
+    display: grid;
+    gap: 8px;
+  }
+
+  .researcherFiles h3 {
+    margin: 0 0 4px;
+    font-size: 14px;
+  }
+
+  .researcherFile {
+    display: grid;
+    gap: 3px;
+    padding: 10px;
+    background: #ffffff;
+    border: 1px solid #d5dfe5;
+    border-radius: 8px;
+  }
+
+  .researcherFile strong {
+    overflow: hidden;
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .researcherFile span,
+  .researcher .emptyFiles {
+    color: #71808a;
+    font-size: 11px;
+  }
+
+  .pipelineNote {
+    display: grid;
+    gap: 7px;
+    margin-top: auto;
+    padding: 13px;
+    background: #dfe9ef;
+    border-radius: 9px;
+    font-size: 12px;
+  }
+
+  .pipelineNote code {
+    overflow-wrap: anywhere;
+    color: #183e59;
+  }
+
+  .pipelineNote span {
+    color: #586b78;
+  }
   
   .chat {
     display: flex;
     flex-direction: column;
-    width: min(900px, 100%);
+    width: 100%;
     min-height: 820px;
-    margin: 0 auto;
     overflow: hidden;
     background: #ffffff;
-    border: 1px solid #d8d8d8;
   }
   
   .header {
@@ -233,9 +366,24 @@
       padding: 0;
     }
   
-    .chat {
+    .workspace {
+      display: flex;
+      flex-direction: column;
       min-height: 100vh;
       border: 0;
+    }
+
+    .researcher {
+      border-right: 0;
+      border-bottom: 1px solid #d8d8d8;
+    }
+
+    .pipelineNote {
+      margin-top: 0;
+    }
+
+    .chat {
+      min-height: 100vh;
     }
   
     .header,
