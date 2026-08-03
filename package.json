@@ -7,14 +7,18 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "render-pdfs": "tsx scripts/render-pdfs.ts",
+    "process-pdfs": "tsx scripts/process-pdfs.ts",
     "upload-embeddings": "tsx scripts/upload-embeddings.ts"
   },
   "dependencies": {
     "@google/genai": "^2.13.0",
     "@huggingface/transformers": "^3.8.1",
     "@supabase/supabase-js": "^2.110.7",
+    "canvas": "^3.2.3",
     "dotenv": "^17.4.2",
     "next": "^16.2.10",
+    "pdfjs-dist": "^6.2.108",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },
