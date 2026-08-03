@@ -175,7 +175,7 @@ function analyzeQuestion(
       .toLowerCase();
 
   const isGreeting =
-    /^(hi|hello|hey|hiya|howdy|good morning|good afternoon|good evening)[!?.\s]*$/i.test(
+    /^(hi|hello|hey|hiya|howdy|good morning|good afternoon|good evening|ㅗㅑ|ㅎㅇ|안녕|안녕하세요)[!?.\s]*$/i.test(
       normalized,
     );
 
@@ -255,6 +255,50 @@ function analyzeQuestion(
     topic,
     wantsFullGuide,
   };
+}
+
+function casualResponse(
+  question: string,
+): string | null {
+  const normalized = question.trim().toLowerCase();
+
+  if (
+    /^(thanks|thank you|thx|ty|고마워|고마워요|감사|감사합니다)[!?.\s]*$/i.test(
+      normalized,
+    )
+  ) {
+    return "You're welcome! Ask me anytime about ScratchJr, micro:bit, or robotics.";
+  }
+
+  if (
+    /^(ok|okay|k|got it|cool|nice|bye|goodbye|응|웅|넵|네|ㅇㅋ|ㅋㅋ+|ㅎㅎ+)[!?.\s]*$/i.test(
+      normalized,
+    )
+  ) {
+    return "Okay! What would you like to explore next?";
+  }
+
+  const mentionsLearningTopic =
+    /\b(scratchjr|scratch|micro:?bit|robot|robotics|step|build|pair|motor|led|battery|wire|breadboard|lesson)\b/i.test(
+      normalized,
+    );
+
+  if (
+    !mentionsLearningTopic &&
+    [...normalized].length <= 3
+  ) {
+    return "What would you like help with in ScratchJr, micro:bit, or robotics?";
+  }
+
+  return null;
+}
+
+function isIdentityQuestion(
+  question: string,
+): boolean {
+  return /^(who are you|what are you|what(?:'s| is) your name|너 누구야|누구세요|넌 누구야)[!?.\s]*$/i.test(
+    question.trim(),
+  );
 }
 
 function needsConversationResolution(
@@ -792,6 +836,33 @@ function buildImages(
   return [];
 }
 
+function buildRelevantImages(
+  results: SearchResult[],
+  intent: SearchIntent,
+): ChatImage[] {
+  if (results.length === 0) {
+    return [];
+  }
+
+  const hasStructuredContext =
+    intent.wantsImage ||
+    intent.stepNumber !== null ||
+    intent.wantsFullGuide ||
+    intent.topic !== null;
+
+  const eligibleResults =
+    hasStructuredContext
+      ? results
+      : results.filter(
+          (result) =>
+            result.similarity >= 0.45,
+        );
+
+  return buildImages(
+    eligibleResults,
+  );
+}
+
 function chooseBestResult(
   results: SearchResult[],
   stepNumber?: number,
@@ -1014,7 +1085,8 @@ async function generateAnswer(
         maxOutputTokens: 4096,
 
         systemInstruction: [
-          "You are a helpful assistant for user-uploaded documents.",
+          "You are the Blocks & Bots Assistant for teachers. You help educators teach ScratchJr, micro:bit, and robotics.",
+          "Never identify yourself as Gemini, Google, a language model, an AI model, or the underlying provider. If asked who you are, say you are the Blocks & Bots Assistant for teachers and describe how you support educators.",
           "",
           "Rules:",
           "1. Answer the user's current question directly.",
@@ -1128,6 +1200,36 @@ export async function POST(
 
     if (intent.isGreeting) {
       return greetingResponse();
+    }
+
+    if (isIdentityQuestion(question)) {
+      return Response.json({
+        answer:
+          "I'm the Blocks & Bots Assistant for teachers. I help educators teach ScratchJr, micro:bit, and robotics with lessons, builds, and troubleshooting support.",
+        sources: [],
+        images: [],
+        generation: {
+          provider: "router",
+          model: null,
+          grounded: false,
+        },
+      });
+    }
+
+    const casualAnswer =
+      casualResponse(question);
+
+    if (casualAnswer) {
+      return Response.json({
+        answer: casualAnswer,
+        sources: [],
+        images: [],
+        generation: {
+          provider: "router",
+          model: null,
+          grounded: false,
+        },
+      });
     }
 
     let results: SearchResult[] =
@@ -1296,7 +1398,10 @@ export async function POST(
       sources:
         buildSources(results),
       images:
-        buildImages(results),
+        buildRelevantImages(
+          results,
+          intent,
+        ),
       generation: {
         provider: "gemini",
         model: GEMINI_MODEL,

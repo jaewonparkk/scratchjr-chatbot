@@ -1,4 +1,20 @@
 import "./globals.css";
+import {
+  Fredoka,
+  Nunito,
+} from "next/font/google";
+
+const fredoka = Fredoka({
+  subsets: ["latin"],
+  variable: "--font-fredoka",
+  display: "swap",
+});
+
+const nunito = Nunito({
+  subsets: ["latin"],
+  variable: "--font-nunito",
+  display: "swap",
+});
 
 export default function RootLayout({
   children,
@@ -7,9 +23,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>
+      <body
+        className={`${nunito.variable} ${fredoka.variable}`}
+      >
         {children}
       </body>
-      </html>
+    </html>
   );
 }

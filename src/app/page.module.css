@@ -132,6 +132,11 @@
     border-radius: 9px;
     font-size: 14px;
     font-weight: 750;
+    font-family:
+      var(--font-fredoka),
+      ui-rounded,
+      system-ui,
+      sans-serif;
     cursor: pointer;
   }
 
@@ -662,11 +667,11 @@
     align-items: center;
     justify-content: center;
     gap: 8px;
-    background: #333333;
+    background: #183153;
   }
 
   .stopButton:hover:not(:disabled) {
-    background: #171717;
+    background: #0f2340;
   }
 
   .stopIcon {

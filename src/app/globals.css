@@ -11,7 +11,22 @@ body {
 body {
   background: #f5f5f3;
   color: #222222;
-  font-family: Arial, Helvetica, sans-serif;
+  font-family:
+    var(--font-nunito),
+    ui-rounded,
+    system-ui,
+    sans-serif;
+}
+
+h1,
+h2,
+h3,
+button {
+  font-family:
+    var(--font-fredoka),
+    ui-rounded,
+    system-ui,
+    sans-serif;
 }
 
 button,

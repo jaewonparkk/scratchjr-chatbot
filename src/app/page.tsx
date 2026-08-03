@@ -113,7 +113,7 @@ export default function Home() {
       id: "welcome",
       role: "assistant",
       text:
-        "Hello! Ask me a question about ScratchJr, micro:bit, or robotics.",
+        "Hello! I'm the Blocks & Bots Assistant for teachers. Ask me a question about ScratchJr, micro:bit, or robotics.",
     },
   ]);
 
