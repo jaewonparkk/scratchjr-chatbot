@@ -1,155 +1,87 @@
 # Blocks & Bots Assistant
 
-A retrieval-augmented assistant for educators working with ScratchJr, micro:bit, and classroom robotics materials.
+An AI assistant for educators working with **ScratchJr, micro:bit, and classroom robotics**.
 
-The application answers questions using indexed curriculum content, shows a relevant document image when the retrieved material supports one, and provides a Researcher workspace for managing and testing knowledge files.
+Teachers can ask questions in natural language, receive answers grounded in curriculum documents, continue with follow-up questions, and view relevant instructional images and sources.
 
 <p align="center">
-  <img
-    src="docs/assets/visual-retrieval-demo.png"
-    alt="Blocks & Bots Assistant displaying a curriculum-grounded answer and a related build image"
-    width="900"
-  />
+  <img src="docs/assets/assistant-home.png" alt="Blocks & Bots Assistant home screen" width="32%" />
+  <img src="docs/assets/grounded-build-answer.png" alt="Grounded build answer with sources" width="32%" />
+  <img src="docs/assets/visual-retrieval-demo.png" alt="Relevant instructional image retrieval" width="32%" />
 </p>
 
 <p align="center">
-  <strong>Next.js 16 · React 19 · TypeScript · Gemini · Supabase · Hugging Face Transformers</strong>
+  <strong>Next.js · TypeScript · Gemini · Supabase · Hugging Face Transformers · RAG</strong>
 </p>
 
-## Current status
+## Features
 
-This repository is a working prototype, not a production-ready multi-user service.
+### Assistant
 
-- The main Assistant and the local Researcher workflow are implemented.
-- The Assistant uses Google Gemini to generate responses from retrieved curriculum context.
-- Embeddings are generated with the local `Supabase/gte-small` model and stored in Supabase.
-- The Researcher training route runs Python and writes processed files to the server filesystem.
-- Authentication, role-based access, and per-user rate limiting are not implemented yet.
-- Researcher file operations require a persistent, writable server filesystem and should not be assumed to work unchanged on a serverless deployment such as Vercel.
-- Uploading or training a file does not automatically commit or push files to GitHub.
+- Answers questions using indexed curriculum content
+- Understands exact build steps, pairing steps, lessons, and full walkthrough requests
+- Uses recent conversation history for follow-up questions such as “What about the red one?”
+- Shows source file, page, slide, and section information when available
+- Displays a related curriculum image when the question and retrieved content support one
+- Avoids showing document images for greetings, typos, and unrelated conversation
+- Allows users to stop a response in progress
 
-## What the Assistant does
+### Researcher
 
-Teachers can ask questions such as:
-
-- “How do I pair a micro:bit?”
-- “Show me Step 4 of the micro:bit build.”
-- “Walk me through the complete build.”
-- “What about the red wire?”
-- “Show me the final build image.”
-
-Depending on the question, the server uses intent routing, exact metadata lookup, vector search, or a combination of those methods. Gemini receives the selected curriculum context and returns an educator-facing answer.
-
-The current Assistant supports:
-
-- Questions about indexed ScratchJr, micro:bit, and robotics materials
-- Exact build-step and pairing-step routing
-- Complete build and lesson walkthrough requests
-- Follow-up questions that depend on recent conversation history
-- Source metadata such as file, page, slide, and section when available
-- Relevant images already associated with retrieved curriculum chunks
-- Suppression of document images for greetings, short unclear input, and unrelated conversation
-- A stop button for an in-progress Assistant request
-
-The application does not perform open-web research or generate new instructional diagrams. Displayed instructional images come from locally prepared curriculum assets or images extracted during ingestion.
-
-## Researcher workspace
-
-The Researcher workspace currently has two views.
-
-### Files
-
-Researchers can:
-
-- Upload PDF, DOCX, PPTX, and common image files up to 25 MB
-- View or download files
-- Train or retrain one file
-- Cancel training for a file while keeping the original file
-- Permanently delete a file and its related processed and Supabase records
-
-Training parses the selected file with the Python ingestion code, creates chunks, generates local embeddings with `Supabase/gte-small`, and upserts those chunks into the Supabase `documents` table.
-
-`Cancel` means untrain: indexed chunks are removed, but the original file remains. `Delete` permanently removes the original file and related application data after confirmation.
-
-### Improve answers
-
-Researchers can:
-
-1. Select one trained file
-2. Ask a test question using that file’s extracted content
-3. Review the generated answer
-4. Write the answer they want instead
-5. Save the feedback and retrain that file’s retrieval data
-
-The saved feedback keeps the tested question, the generated answer, and the teacher’s corrected answer together. Only the question and corrected answer are used as correction content for retrieval; the incorrect answer is retained as feedback metadata rather than embedded as approved knowledge.
-
-This is retrieval correction, not fine-tuning. It adds a correction chunk and regenerates embeddings for the selected file; it does not modify Gemini’s model weights.
+- Upload PDF, DOCX, PPTX, and image files
+- View, download, train, retrain, untrain, or permanently delete a file
+- Test one trained document through a dedicated chat
+- Compare the generated response with the answer an educator wants
+- Save the improved answer and regenerate retrieval embeddings
 
 <p align="center">
-  <img
-    src="docs/assets/researcher-feedback-workflow.png"
-    alt="Researcher workflow for testing and improving an answer"
-    width="850"
-  />
+  <img src="docs/assets/researcher-file-management.png" alt="Researcher file management" width="49%" />
+  <img src="docs/assets/researcher-feedback-workflow.png" alt="Researcher answer improvement workflow" width="49%" />
 </p>
 
-## Architecture
+## How it works
 
 ```text
-Reviewed curriculum chunks or a Researcher upload
-                     |
-                     v
-        Text/image extraction and chunking
-                     |
-                     v
-       Local gte-small embedding generation
-                     |
-                     v
-       Supabase documents table + pgvector
-                     |
-                     v
-User question -> intent/context routing -> retrieval
-                     |
-                     v
-       Gemini with selected curriculum context
-                     |
-                     v
-          Answer + sources + selected images
+Curriculum files
+      ↓
+Text and image extraction
+      ↓
+Chunking + metadata
+      ↓
+gte-small embeddings
+      ↓
+Supabase vector search
+      ↓
+Gemini with retrieved context
+      ↓
+Answer + sources + relevant images
 ```
 
-The main reviewed-curriculum pipeline and the browser-triggered Researcher pipeline are related but separate:
+The project uses `@huggingface/transformers` to run the `Supabase/gte-small` embedding model locally. Supabase stores and searches the document vectors, while Gemini generates the final response from the retrieved curriculum context.
 
-- The reviewed pipeline uses the files under `ingestion/`, the `/review` interface, `reviewed_documents.json`, and `scripts/upload-embeddings.ts`.
-- The Researcher pipeline processes one selected active file with `ingestion/researcher_ingest.py` and `scripts/train-researcher-file.ts`.
+Researcher corrections are **retrieval updates, not Gemini fine-tuning**. The tested question and educator-approved answer are added as correction content and embedded again. The incorrect answer is retained only as feedback metadata.
 
-## Technology
+## Tech stack
 
-- Next.js 16 App Router and Route Handlers
-- React 19 and TypeScript
+- Next.js 16, React 19, and TypeScript
 - Google Gemini through `@google/genai`
-- Supabase Postgres with a `documents` table and a `match_documents` vector-search RPC
-- `Supabase/gte-small` embeddings through `@huggingface/transformers`
-- Python document parsing with PyMuPDF, `python-docx`, and `python-pptx`
+- Supabase Postgres and pgvector
+- `@huggingface/transformers` with `Supabase/gte-small`
+- Python, PyMuPDF, `python-docx`, and `python-pptx`
 - CSS Modules
 
-## Local setup
+## Run locally
 
-### Requirements
-
-- Node.js compatible with Next.js 16
-- Python 3 with virtual-environment support
-- A Supabase project configured with the expected `documents` table and `match_documents` RPC
-- A Google Gemini API key
-
-### Install JavaScript dependencies
+### 1. Install dependencies
 
 ```bash
 npm install
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r ingestion/requirements.txt
 ```
 
-### Configure environment variables
-
-Create `.env.local` in the project root:
+### 2. Add `.env.local`
 
 ```dotenv
 GEMINI_API_KEY=your_gemini_api_key
@@ -158,77 +90,37 @@ SUPABASE_URL=your_supabase_project_url
 SUPABASE_SECRET_KEY=your_supabase_server_secret
 ```
 
-`GEMINI_MODEL` is optional; the application currently defaults to `gemini-2.5-flash`.
+`GEMINI_MODEL` is optional. The Supabase project must already contain the expected `documents` table and `match_documents` vector-search function.
 
-Never expose `SUPABASE_SECRET_KEY` in client-side code or commit `.env.local` to Git.
-
-### Install Python dependencies
-
-The Researcher training route attempts to prepare a project `.venv` automatically. For an explicit local setup, run:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r ingestion/requirements.txt
-```
-
-### Start the application
+### 3. Start the app
 
 ```bash
 npm run dev
 ```
 
-Then open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:3000](http://localhost:3000).
 
-The database health endpoint is available at [http://localhost:3000/api/health](http://localhost:3000/api/health).
+## Important limitations
 
-## Main reviewed-document pipeline
+This is currently a working prototype.
 
-The repository also contains a review-oriented ingestion workflow for preparing the main curriculum knowledge base.
-
-Typical commands are:
-
-```bash
-python -m ingestion.run
-python -m ingestion.validate
-```
-
-After review decisions have been completed and finalized, embeddings can be uploaded with:
-
-```bash
-npm run upload-embeddings
-```
-
-Be careful: `scripts/upload-embeddings.ts` clears and replaces the current contents of the Supabase `documents` table. It should only be run when the reviewed dataset is ready to become the complete knowledge base.
-
-Researcher users do not run these commands from the browser. The Researcher `Train` button uses the separate single-file route described above.
+- Authentication, administrator roles, and rate limiting have not been added yet.
+- The Researcher workflow runs Python and writes files on the server, so it needs persistent storage and does not work unchanged on a typical serverless deployment.
+- Training a file updates Supabase and local project data; it does not automatically commit or push changes to GitHub.
+- The assistant does not search the public web. Its instructional content and displayed images come from the project’s prepared curriculum data.
 
 ## Project structure
 
 ```text
-src/app/                         Next.js pages and route handlers
-src/app/api/chat/                Main Assistant API
-src/app/api/researcher/          Researcher file, chat, training, and correction APIs
-src/lib/rag/                     Intent parsing, embeddings, retrieval, and generation helpers
-src/lib/researcher/              Researcher manifest handling
-ingestion/                       Python document parsers and review pipeline
-scripts/                         Embedding and ingestion utilities
-knowledge/                       Raw, processed, reviewed, and manifest data
-public/generated-docs/           Prepared document-page images used by the UI
-docs/assets/                     README screenshots
+src/app/                 UI and Next.js route handlers
+src/lib/rag/             Intent, retrieval, embeddings, and generation
+src/lib/researcher/      Researcher manifest handling
+ingestion/               Python document processing
+scripts/                 Ingestion and embedding utilities
+knowledge/               Raw and processed curriculum data
+public/generated-docs/   Prepared instructional images
+docs/assets/             README screenshots
 ```
-
-## Deployment notes
-
-The Assistant can be deployed after its Gemini and Supabase environment variables are configured. The Researcher workspace needs additional production work because it currently:
-
-- Writes uploaded and processed files to the application filesystem
-- Creates or uses a local Python virtual environment
-- Runs Python and local embedding processes from Next.js route handlers
-- Can perform privileged Supabase mutations
-- Has no authentication or administrator authorization
-
-Before exposing the Researcher workspace to a team, add authentication, restrict Researcher APIs to administrators, add rate limiting and concurrency controls, and move uploaded/processed files to persistent object storage or another durable processing service.
 
 ## Verification
 
@@ -236,5 +128,3 @@ Before exposing the Researcher workspace to a team, add authentication, restrict
 npx tsc --noEmit --incremental false
 npx eslint src/app/page.tsx src/app/api/chat/route.ts src/app/api/researcher
 ```
-
-Additional manual QA notes are available in `docs/TEST_RESULTS.md` and `docs/PROJECT_STATUS.md`.
