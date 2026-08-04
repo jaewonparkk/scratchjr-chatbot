@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-08-04T16:11:15.978Z",
+  "updatedAt": "2026-08-04T16:35:27.057Z",
   "files": [
     {
       "fileName": "Microbitpairing (1).pdf",
@@ -13,6 +13,13 @@
           "savedAt": "2026-08-04T14:56:04.875Z"
         }
       ]
+    },
+    {
+      "fileName": "Lessons_01-36_REVISED.docx.pdf",
+      "status": "trained",
+      "trainedAt": "2026-08-04T16:35:27.057Z",
+      "updatedAt": "2026-08-04T16:35:27.057Z",
+      "corrections": []
     }
   ]
 }

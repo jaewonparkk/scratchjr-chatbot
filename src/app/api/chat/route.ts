@@ -136,6 +136,7 @@ async function findExactTeacherCorrection(
   }
 
   const normalizedQuestion = normalizeTeacherQuestion(question);
+
   for (const fileName of fileNames.filter((name) => name.endsWith(".json"))) {
     try {
       const parsed = JSON.parse(

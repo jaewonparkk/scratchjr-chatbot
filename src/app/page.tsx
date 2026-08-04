@@ -89,6 +89,13 @@ function normalizeLearnedQuestion(value: string): string {
     .trim();
 }
 
+function findLearnedCorrection(
+  question: string,
+  corrections: Record<string, string>,
+): string | undefined {
+  return corrections[normalizeLearnedQuestion(question)];
+}
+
 function renderMessageText(
   text: string,
 ): ReactNode {
@@ -229,6 +236,9 @@ export default function Home() {
   const [isPracticeBusy, setIsPracticeBusy] =
     useState(false);
 
+  const [isPracticeGenerating, setIsPracticeGenerating] =
+    useState(false);
+
   const [isPracticeDragging, setIsPracticeDragging] =
     useState(false);
 
@@ -241,6 +251,9 @@ export default function Home() {
     } | null>(null);
 
   const [practiceAwaitingConfirmation, setPracticeAwaitingConfirmation] =
+    useState(false);
+
+  const [practiceImprovementsOpen, setPracticeImprovementsOpen] =
     useState(false);
 
   const [practiceImprovementTarget, setPracticeImprovementTarget] =
@@ -258,6 +271,14 @@ export default function Home() {
     useRef<AbortController | null>(
       null,
     );
+
+  const practiceAbortControllerRef =
+    useRef<AbortController | null>(
+      null,
+    );
+
+  const practiceSaveInFlightRef =
+    useRef(false);
 
   const practiceFileInputRef =
     useRef<HTMLInputElement | null>(null);
@@ -277,6 +298,8 @@ export default function Home() {
   useEffect(
     () => () => {
       abortControllerRef.current
+        ?.abort();
+      practiceAbortControllerRef.current
         ?.abort();
     },
     [],
@@ -345,11 +368,11 @@ export default function Home() {
       try {
         const response = await fetch("/api/researcher/corrections", { cache: "no-store" });
         const data = (await response.json()) as { corrections?: Record<string, string> };
-        const merged = { ...browserCorrections, ...(data.corrections ?? {}) };
-        setLearnedCorrections(merged);
+        if (!response.ok || !data.corrections) throw new Error("Could not load saved improvements.");
+        setLearnedCorrections(data.corrections);
         window.localStorage.setItem(
           "blocks-bots-teacher-corrections",
-          JSON.stringify(merged),
+          JSON.stringify(data.corrections),
         );
       } catch {
         setLearnedCorrections(browserCorrections);
@@ -719,7 +742,7 @@ export default function Home() {
       return;
     }
 
-    const learnedAnswer = learnedCorrections[normalizeLearnedQuestion(question)];
+    const learnedAnswer = findLearnedCorrection(question, learnedCorrections);
     if (learnedAnswer) {
       setImproveMessages((messages) => [
         ...messages,
@@ -759,6 +782,11 @@ export default function Home() {
 
   function stopGenerating() {
     abortControllerRef.current
+      ?.abort();
+  }
+
+  function stopPracticeGenerating() {
+    practiceAbortControllerRef.current
       ?.abort();
   }
 
@@ -908,16 +936,37 @@ export default function Home() {
     }
   }
 
+  async function openPracticeImprovements() {
+    setPracticeMenuOpen(false);
+    setPracticeImprovementsOpen(true);
+    try {
+      const response = await fetch("/api/researcher/corrections", { cache: "no-store" });
+      const data = (await response.json()) as { corrections?: Record<string, string> };
+      if (!response.ok || !data.corrections) return;
+      setLearnedCorrections(data.corrections);
+      window.localStorage.setItem(
+        "blocks-bots-teacher-corrections",
+        JSON.stringify(data.corrections),
+      );
+    } catch {
+      // Keep the locally cached list available if the refresh is temporarily unavailable.
+    }
+  }
+
   async function previewPracticeImprovement(
     question: string,
     originalAnswer: string,
     feedback: string,
   ) {
+    const controller = new AbortController();
+    practiceAbortControllerRef.current = controller;
     setIsPracticeBusy(true);
+    setIsPracticeGenerating(true);
     try {
       const response = await fetch("/api/researcher/corrections", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           mode: "preview",
           question,
@@ -930,32 +979,44 @@ export default function Home() {
       setPracticePendingImprovement({ question, originalAnswer, correctedAnswer: data.correctedAnswer, feedback });
       setPracticeAwaitingConfirmation(false);
     } catch (error: unknown) {
+      if (controller.signal.aborted) return;
       addPracticeMessage("assistant", error instanceof Error ? error.message : "Could not improve the answer.");
     } finally {
-      setIsPracticeBusy(false);
+      if (practiceAbortControllerRef.current === controller) {
+        practiceAbortControllerRef.current = null;
+        setIsPracticeGenerating(false);
+        setIsPracticeBusy(false);
+      }
     }
   }
 
-  async function previewPracticeFeedbackFromHistory(feedback: string) {
+  async function detectPracticeFeedback(feedback: string): Promise<boolean> {
+    const controller = new AbortController();
+    practiceAbortControllerRef.current = controller;
     setIsPracticeBusy(true);
+    setIsPracticeGenerating(true);
     try {
       const response = await fetch("/api/researcher/corrections", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
-          mode: "preview",
+          mode: "detect",
           feedbackInstruction: feedback,
-          history: practiceMessages,
+          history: [...practiceMessages, { role: "user", text: feedback }],
         }),
       });
       const data = (await response.json()) as {
+        isFeedback?: boolean;
         question?: string;
         assistantAnswer?: string;
         correctedAnswer?: string;
         error?: string;
       };
-      if (!response.ok || !data.question || !data.assistantAnswer || !data.correctedAnswer) {
-        throw new Error(data.error ?? "I couldn't identify the answer you wanted to improve.");
+      if (!response.ok) throw new Error(data.error ?? "Could not understand that message.");
+      if (!data.isFeedback) return false;
+      if (!data.question || !data.assistantAnswer || !data.correctedAnswer) {
+        throw new Error("I understood this as feedback, but couldn't identify the answer to change.");
       }
       setPracticeImprovementTarget({ question: data.question, answer: data.assistantAnswer });
       setPracticeFeedbackInput(feedback);
@@ -966,18 +1027,26 @@ export default function Home() {
         feedback,
       });
       setPracticeAwaitingConfirmation(false);
+      return true;
     } catch (error: unknown) {
+      if (controller.signal.aborted) return true;
       addPracticeMessage(
         "assistant",
-        error instanceof Error ? error.message : "I couldn't identify the answer you wanted to improve.",
+        error instanceof Error ? error.message : "Could not understand that message.",
       );
+      return true;
     } finally {
-      setIsPracticeBusy(false);
+      if (practiceAbortControllerRef.current === controller) {
+        practiceAbortControllerRef.current = null;
+        setIsPracticeGenerating(false);
+        setIsPracticeBusy(false);
+      }
     }
   }
 
   async function savePracticeImprovement() {
-    if (!practicePendingImprovement || isPracticeBusy) return;
+    if (!practicePendingImprovement || isPracticeBusy || practiceSaveInFlightRef.current) return;
+    practiceSaveInFlightRef.current = true;
     setIsPracticeBusy(true);
     try {
       const response = await fetch("/api/researcher/corrections", {
@@ -1004,6 +1073,35 @@ export default function Home() {
       setPracticeAwaitingConfirmation(false);
     } catch (error: unknown) {
       addPracticeMessage("assistant", error instanceof Error ? error.message : "Could not save the improvement.");
+    } finally {
+      practiceSaveInFlightRef.current = false;
+      setIsPracticeBusy(false);
+    }
+  }
+
+  async function undoSavedPracticeImprovement(question: string) {
+    if (!question || isPracticeBusy) return;
+    setIsPracticeBusy(true);
+    try {
+      const response = await fetch("/api/researcher/corrections", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question }),
+      });
+      const data = (await response.json()) as { message?: string; error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Could not undo the saved improvement.");
+
+      const key = normalizeLearnedQuestion(question);
+      const nextCorrections = { ...learnedCorrections };
+      delete nextCorrections[key];
+      setLearnedCorrections(nextCorrections);
+      window.localStorage.setItem("blocks-bots-teacher-corrections", JSON.stringify(nextCorrections));
+      addPracticeMessage("assistant", data.message ?? "Saved improvement undone.");
+    } catch (error: unknown) {
+      addPracticeMessage(
+        "assistant",
+        error instanceof Error ? error.message : "Could not undo the saved improvement.",
+      );
     } finally {
       setIsPracticeBusy(false);
     }
@@ -1072,9 +1170,7 @@ export default function Home() {
       return;
     }
 
-    const practiceFeedbackIntent = /(?:last\s+time\s+(?:you\s+)?(?:said|answered)|you\s+(?:said|answered)\s+["“']|i\s+want\s+you\s+to\s+improve|improve\s+this\s+answer|change\s+(?:what\s+you\s+said|that\s+answer)|i\s+(?:do\s+not|don['’]t)\s+like\s+(?:that|this)\s+answer)/i.test(command);
-    if (practiceFeedbackIntent) {
-      await previewPracticeFeedbackFromHistory(command);
+    if (await detectPracticeFeedback(command)) {
       return;
     }
 
@@ -1121,13 +1217,16 @@ export default function Home() {
       return;
     }
 
-    const learnedPracticeAnswer = learnedCorrections[normalizeLearnedQuestion(command)];
+    const learnedPracticeAnswer = findLearnedCorrection(command, learnedCorrections);
     if (learnedPracticeAnswer) {
       addPracticeMessage("assistant", learnedPracticeAnswer, true);
       return;
     }
 
+    const controller = new AbortController();
+    practiceAbortControllerRef.current = controller;
     setIsPracticeBusy(true);
+    setIsPracticeGenerating(true);
     try {
       const wantsFileOnly = /^(?:check|ask)\s+(?:this|selected)\s+file\s*[:\-]?/i.test(command);
       if (wantsFileOnly && (!targetFile || (targetFile.status !== "trained" && targetFile.status !== "existing"))) {
@@ -1137,6 +1236,7 @@ export default function Home() {
       const response = await fetch(wantsFileOnly ? "/api/researcher/chat" : "/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify(wantsFileOnly ? {
           fileName: targetFile?.name,
           question,
@@ -1150,9 +1250,14 @@ export default function Home() {
       if (!response.ok || !data.answer) throw new Error(data.error ?? "The assistant could not answer.");
       addPracticeMessage("assistant", data.answer, true);
     } catch (error: unknown) {
+      if (controller.signal.aborted) return;
       addPracticeMessage("assistant", error instanceof Error ? error.message : "The assistant could not answer.");
     } finally {
-      setIsPracticeBusy(false);
+      if (practiceAbortControllerRef.current === controller) {
+        practiceAbortControllerRef.current = null;
+        setIsPracticeGenerating(false);
+        setIsPracticeBusy(false);
+      }
     }
   }
 
@@ -1189,7 +1294,7 @@ export default function Home() {
 
     setInput("");
 
-    const learnedAnswer = learnedCorrections[normalizeLearnedQuestion(question)];
+    const learnedAnswer = findLearnedCorrection(question, learnedCorrections);
     if (learnedAnswer) {
       setMessages((currentMessages) => [
         ...currentMessages,
@@ -1799,6 +1904,42 @@ export default function Home() {
           ) : null}
 
           <div className={styles.practiceMessages}>
+            {practiceImprovementsOpen ? (
+              <div className={styles.practiceImprovementsPanel}>
+                <div className={styles.practiceImprovementsHeader}>
+                  <div>
+                    <strong>Saved improved answers</strong>
+                    <span>These answers are used in future responses.</span>
+                  </div>
+                  <button type="button" onClick={() => { setPracticeImprovementsOpen(false); }}>Close</button>
+                </div>
+                {Object.keys(learnedCorrections).length === 0 ? (
+                  <p>No improved answers have been saved yet.</p>
+                ) : (
+                  <div className={styles.practiceImprovementList}>
+                    {Object.entries(learnedCorrections).map(([question, answer]) => (
+                      <article key={question} className={styles.practiceSavedImprovement}>
+                        <div>
+                          <span>Question</span>
+                          <strong>{question}</strong>
+                        </div>
+                        <div>
+                          <span>Improved answer</span>
+                          <p>{answer}</p>
+                        </div>
+                        <button
+                          type="button"
+                          disabled={isPracticeBusy}
+                          onClick={() => { void undoSavedPracticeImprovement(question); }}
+                        >
+                          Undo improvement
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
             {practiceMessages.map((message, index) => (
               <div key={`${message.role}-${index}`} className={styles.practiceMessageGroup}>
                 <div className={message.role === "user" ? styles.practiceUserMessage : styles.practiceAssistantMessage}>
@@ -2003,6 +2144,18 @@ export default function Home() {
                     <strong>▤</strong>
                     <span><b>My files</b><small>View, select, and train files</small></span>
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void openPracticeImprovements();
+                    }}
+                  >
+                    <strong>✓</strong>
+                    <span>
+                      <b>See improved answers</b>
+                      <small>View or undo saved answers ({Object.keys(learnedCorrections).length})</small>
+                    </span>
+                  </button>
                 </div>
               ) : null}
               <input
@@ -2019,7 +2172,19 @@ export default function Home() {
               placeholder={practiceSelectedFile ? `Ask about ${practiceSelectedFile}...` : "Ask Researcher 2 or add a file..."}
               disabled={isPracticeBusy}
             />
-            <button type="submit" disabled={!practiceInput.trim() || isPracticeBusy}>Send</button>
+            {isPracticeGenerating ? (
+              <button
+                type="button"
+                className={styles.practiceStopButton}
+                onClick={stopPracticeGenerating}
+                aria-label="Stop generating"
+              >
+                <span className={styles.practiceStopIcon} aria-hidden="true" />
+                Stop
+              </button>
+            ) : (
+              <button type="submit" disabled={!practiceInput.trim() || isPracticeBusy}>Send</button>
+            )}
           </form>
         </section>
         ) : (

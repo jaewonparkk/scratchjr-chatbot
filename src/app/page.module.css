@@ -792,6 +792,99 @@
     font-size: 13px;
   }
 
+  .practiceImprovementsPanel {
+    display: grid;
+    width: min(720px, 100%);
+    gap: 12px;
+    padding: 16px;
+    background: #fffaf1;
+    border: 1px solid #edc881;
+    border-radius: 16px;
+  }
+
+  .practiceImprovementsHeader {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .practiceImprovementsHeader > div {
+    display: grid;
+    gap: 3px;
+  }
+
+  .practiceImprovementsHeader span,
+  .practiceSavedImprovement span {
+    color: #786956;
+    font-size: 11px;
+  }
+
+  .practiceImprovementsHeader > button {
+    color: #8a4b00;
+    background: transparent;
+    border: 0;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 750;
+    cursor: pointer;
+  }
+
+  .practiceImprovementsPanel > p {
+    margin: 0;
+    padding: 16px;
+    color: #786956;
+    background: #ffffff;
+    border-radius: 11px;
+    font-size: 12px;
+  }
+
+  .practiceImprovementList {
+    display: grid;
+    gap: 10px;
+  }
+
+  .practiceSavedImprovement {
+    display: grid;
+    gap: 10px;
+    padding: 13px;
+    background: #ffffff;
+    border: 1px solid #ead7b8;
+    border-radius: 12px;
+  }
+
+  .practiceSavedImprovement > div {
+    display: grid;
+    gap: 4px;
+  }
+
+  .practiceSavedImprovement strong,
+  .practiceSavedImprovement p {
+    margin: 0;
+    color: #3d3024;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+
+  .practiceSavedImprovement > button {
+    justify-self: start;
+    padding: 8px 11px;
+    color: #9f2f24;
+    background: #fff7f5;
+    border: 1px solid #e3a59e;
+    border-radius: 9px;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 750;
+    cursor: pointer;
+  }
+
+  .practiceSavedImprovement > button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
   .practiceFileBadge {
     max-width: 320px;
     overflow: hidden;
@@ -1082,6 +1175,20 @@
   .practiceComposer > button:disabled {
     background: #d7c7af;
     cursor: not-allowed;
+  }
+
+  .practiceComposer > .practiceStopButton {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: #b45309;
+  }
+
+  .practiceStopIcon {
+    width: 9px;
+    height: 9px;
+    background: currentColor;
+    border-radius: 2px;
   }
 
   .practiceAddWrap {

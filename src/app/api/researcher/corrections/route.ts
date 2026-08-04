@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -48,9 +49,58 @@ export async function GET() {
   }
 }
 
+export async function DELETE(request: Request) {
+  try {
+    const body = (await request.json()) as { question?: unknown };
+    if (typeof body.question !== "string" || !body.question.trim()) {
+      return Response.json({ error: "Choose a saved improvement to undo." }, { status: 400 });
+    }
+
+    const processedPath = path.join(
+      process.cwd(),
+      "knowledge",
+      "processed",
+      "researcher",
+      "teacher-feedback.json",
+    );
+    const parsed = JSON.parse(await fs.readFile(processedPath, "utf8")) as {
+      chunks?: Array<Record<string, unknown>>;
+    };
+    if (!Array.isArray(parsed.chunks)) throw new Error("The saved improvement data is invalid.");
+
+    const normalizedQuestion = normalizeQuestion(body.question);
+    const removedIds: string[] = [];
+    const remaining = parsed.chunks.filter((chunk) => {
+      const metadata = chunk.metadata;
+      if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return true;
+      const testedQuestion = (metadata as Record<string, unknown>).tested_question;
+      const matches = typeof testedQuestion === "string" &&
+        normalizeQuestion(testedQuestion) === normalizedQuestion;
+      if (matches && typeof chunk.id === "string") removedIds.push(chunk.id);
+      return !matches;
+    });
+
+    if (removedIds.length === 0) {
+      return Response.json({ error: "That saved improvement was not found." }, { status: 404 });
+    }
+
+    await fs.writeFile(processedPath, JSON.stringify({ chunks: remaining }, null, 2), "utf8");
+    const { error } = await supabaseAdmin
+      .from("documents")
+      .delete()
+      .in("chunk_id", removedIds);
+    if (error) throw new Error(`The saved answer was removed, but its training index could not be cleared: ${error.message}`);
+
+    return Response.json({ success: true, message: "Saved improvement undone. The assistant will no longer use it." });
+  } catch (error: unknown) {
+    const detail = error instanceof Error ? error.message : "Unknown server error";
+    return Response.json({ error: `The saved improvement could not be undone: ${detail}` }, { status: 500 });
+  }
+}
+
 export async function POST(request: Request) {
   let temporaryPath = "";
-  let operation: "preview" | "save" = "save";
+  let operation: "detect" | "preview" | "save" = "save";
 
   try {
     const body = (await request.json()) as {
@@ -62,7 +112,11 @@ export async function POST(request: Request) {
       history?: unknown;
     };
 
-    const mode = body.mode === "preview" ? "preview" : "save";
+    const mode = body.mode === "detect"
+      ? "detect"
+      : body.mode === "preview"
+        ? "preview"
+        : "save";
     operation = mode;
 
     const feedbackInstruction = typeof body.feedbackInstruction === "string"
@@ -70,7 +124,7 @@ export async function POST(request: Request) {
       : body.correctedAnswer;
 
     if (
-      (mode === "preview" && (
+      ((mode === "preview" || mode === "detect") && (
         typeof feedbackInstruction !== "string" ||
         feedbackInstruction.trim().length < 1 ||
         feedbackInstruction.trim().length > 10_000
@@ -128,7 +182,7 @@ export async function POST(request: Request) {
       : "Teacher approved this revised answer.";
     let correctedAnswer: string;
 
-    if (mode === "preview") {
+    if (mode === "preview" || mode === "detect") {
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) throw new Error("GEMINI_API_KEY is missing.");
       const client = new GoogleGenAI({ apiKey });
@@ -136,6 +190,7 @@ export async function POST(request: Request) {
       const history = Array.isArray(body.history)
         ? body.history.slice(-100).map((item) => JSON.stringify(item)).join("\n")
         : "No saved chat history was supplied.";
+      const isDetection = mode === "detect";
       const revision = await client.models.generateContent({
         model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
         contents: [{
@@ -146,17 +201,27 @@ export async function POST(request: Request) {
             `TEACHER FEEDBACK:\n${teacherInstruction}`,
           ].join("\n\n") : [
             `SAVED CHAT HISTORY:\n${history}`,
-            `TEACHER FEEDBACK:\n${teacherInstruction}`,
-            "Identify the answer the teacher is referring to, even if they describe or quote it informally.",
+            `LATEST TEACHER MESSAGE:\n${teacherInstruction}`,
+            isDetection
+              ? "First decide from meaning and conversation context whether the latest message asks to change, correct, or express a preference about an earlier assistant answer."
+              : "Identify the answer the teacher is referring to, even if they describe or quote it informally.",
           ].join("\n\n") }],
         }],
         config: {
           temperature: 0.1,
           maxOutputTokens: 4096,
-          systemInstruction: "Return exactly three sections using these delimiter lines: <<<QUESTION>>>, <<<ORIGINAL_ANSWER>>>, and <<<CORRECTED_ANSWER>>>. Put the matching content after each delimiter. Do not use JSON and do not add any other sections or commentary. If a question and current answer are supplied, preserve them in the first two sections. Otherwise, infer the referenced question and assistant answer from the saved chat history and teacher feedback. Revise that answer according to the teacher's conversational feedback. The corrected section must contain only the complete final answer teachers should receive. Preserve accurate facts unless explicitly corrected. If no target can be identified, leave the first two sections empty.",
+          systemInstruction: isDetection
+            ? "Return exactly four sections: <<<IS_FEEDBACK>>> with YES or NO, then <<<QUESTION>>>, <<<ORIGINAL_ANSWER>>>, and <<<CORRECTED_ANSWER>>>. Do not use JSON. Use meaning and conversation context, not fixed phrases. Feedback means the teacher wants an earlier assistant answer changed, corrected, restyled, or replaced. An ordinary question or request for information is not feedback. If NO, leave the other sections empty. If YES, infer the referenced earlier question and answer, then revise it. Preserve the teacher's supplied wording, facts, constraints, and intent as closely as possible (about 90%); only improve grammar, clarity, and natural phrasing unless the teacher requests a larger change."
+            : "Return exactly three sections using these delimiter lines: <<<QUESTION>>>, <<<ORIGINAL_ANSWER>>>, and <<<CORRECTED_ANSWER>>>. Put the matching content after each delimiter. Do not use JSON and do not add any other sections or commentary. If a question and current answer are supplied, preserve them in the first two sections. Otherwise, infer the referenced question and assistant answer from the saved chat history and teacher feedback. Revise that answer according to the teacher's conversational feedback. Preserve the teacher's supplied wording, facts, constraints, and intent as closely as possible (about 90%); only improve grammar, clarity, and natural phrasing unless the teacher requests a larger change. The corrected section must contain only the complete final answer teachers should receive. If no target can be identified, leave the first two sections empty.",
         },
       });
       const previewText = revision.text?.trim() ?? "";
+      if (isDetection) {
+        const feedbackMatch = previewText.match(/<<<IS_FEEDBACK>>>\s*(YES|NO)/i);
+        if (feedbackMatch?.[1]?.toUpperCase() !== "YES") {
+          return Response.json({ isFeedback: false });
+        }
+      }
       const questionMatch = previewText.match(
         /<<<QUESTION>>>\s*([\s\S]*?)\s*<<<ORIGINAL_ANSWER>>>/,
       );
@@ -175,7 +240,12 @@ export async function POST(request: Request) {
           { status: 400 },
         );
       }
-      return Response.json({ question, assistantAnswer, correctedAnswer });
+      return Response.json({
+        ...(isDetection ? { isFeedback: true } : {}),
+        question,
+        assistantAnswer,
+        correctedAnswer,
+      });
     }
 
     correctedAnswer = (body.correctedAnswer as string).trim();
@@ -277,7 +347,7 @@ export async function POST(request: Request) {
     const detail = error instanceof Error ? error.message : "Unknown server error";
     return Response.json(
       {
-        error: operation === "preview"
+        error: operation === "preview" || operation === "detect"
           ? `The improved answer preview could not be generated: ${detail}`
           : `The correction could not be saved: ${detail}`,
       },
