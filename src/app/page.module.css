@@ -334,6 +334,92 @@
     border-radius: 8px;
   }
 
+  .improveChat {
+    border-color: #edc881;
+    box-shadow: 0 12px 34px rgb(182 95 0 / 10%);
+  }
+
+  .improveChat .researcherChatHeader {
+    background: linear-gradient(135deg, #ffffff 0%, #fff7e8 100%);
+    border-bottom-color: #f0d39a;
+  }
+
+  .improveChat .researcherChatMessages {
+    min-height: 300px;
+    background: #fffaf1;
+  }
+
+  .improveChat .researcherChatForm {
+    padding: 14px;
+    background: #ffffff;
+    border-top-color: #f0d39a;
+  }
+
+  .improveChat .researcherChatForm input {
+    padding: 13px 16px;
+    background: #fffdf8;
+    border-color: #e7c589;
+    border-radius: 999px;
+  }
+
+  .improveChat .researcherChatForm button {
+    min-width: 72px;
+    border-radius: 999px;
+    background: #f59e0b;
+  }
+
+  .chatStatus {
+    display: inline-flex;
+    margin-bottom: 7px;
+    padding: 4px 8px;
+    color: #8a4b00;
+    background: #fff1d6;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .openFeedbackButton,
+  .feedbackShortcut button {
+    padding: 9px 13px;
+    color: #8a4b00;
+    background: #ffffff;
+    border: 1px solid #e7c589;
+    border-radius: 8px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 750;
+    cursor: pointer;
+  }
+
+  .openFeedbackButton:hover:not(:disabled),
+  .feedbackShortcut button:hover:not(:disabled) {
+    background: #fff1d6;
+  }
+
+  .openFeedbackButton:disabled,
+  .feedbackShortcut button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .feedbackShortcut {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: min(760px, 100%);
+    gap: 14px;
+    padding: 12px 14px;
+    color: #74572e;
+    background: #fff4dc;
+    border: 1px solid #f0d39a;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
   .researcherChatMessages {
     display: flex;
     flex-direction: column;
@@ -360,6 +446,29 @@
     font-size: 13px;
     line-height: 1.5;
     white-space: pre-wrap;
+  }
+
+  .improveMessageGroup {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .improveAnswerButton {
+    align-self: flex-start;
+    padding: 4px 8px;
+    color: #8a4b00;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    font: inherit;
+    font-size: 10px;
+    font-weight: 750;
+    cursor: pointer;
+  }
+
+  .improveAnswerButton:hover {
+    background: #fff1d6;
   }
 
   .researcherUserMessage {
@@ -462,6 +571,38 @@
     font-size: 12px;
   }
 
+  .feedbackConversation {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-height: 170px;
+    padding: 16px;
+    background: #fffaf1;
+    border: 1px solid #f0d39a;
+    border-radius: 12px;
+  }
+
+  .feedbackQuestion {
+    align-self: flex-end;
+    max-width: 86%;
+    padding: 10px 13px;
+    color: #ffffff;
+    background: #f59e0b;
+    border-radius: 14px 14px 4px 14px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .feedbackQuestion span {
+    display: block;
+    margin-bottom: 3px;
+    color: #fff4dc;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
   .feedbackStep {
     color: #b65f00;
     font-size: 11px;
@@ -529,6 +670,45 @@
     cursor: not-allowed;
   }
 
+  .feedbackActions .secondaryFeedbackButton,
+  .proposedImprovementActions .secondaryFeedbackButton {
+    color: #8a4b00;
+    background: #ffffff;
+    border: 1px solid #e7c589;
+  }
+
+  .proposedImprovement {
+    display: grid;
+    gap: 14px;
+    padding: 14px;
+    background: #fffaf1;
+    border: 1px solid #f0d39a;
+    border-radius: 11px;
+  }
+
+  .proposedImprovement > strong {
+    color: #4f4031;
+    font-size: 13px;
+  }
+
+  .proposedImprovementActions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+  }
+
+  .proposedImprovementActions button {
+    padding: 10px 13px;
+    color: #ffffff;
+    background: #b65f00;
+    border: 0;
+    border-radius: 8px;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 750;
+    cursor: pointer;
+  }
+
   .pipelineNote {
     display: grid;
     gap: 7px;
@@ -547,6 +727,452 @@
 
   .pipelineNote span {
     color: #586b78;
+  }
+
+  .practiceChat {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 820px;
+    background: #fffdf8;
+  }
+
+  .practiceDropOverlay {
+    position: absolute;
+    inset: 12px;
+    display: grid;
+    padding: 24px;
+    background: rgb(255 250 241 / 94%);
+    border: 3px dashed #f59e0b;
+    border-radius: 18px;
+    place-items: center;
+    pointer-events: none;
+    z-index: 20;
+  }
+
+  .practiceDropOverlay > div {
+    display: grid;
+    gap: 8px;
+    padding: 25px 32px;
+    color: #8a4b00;
+    background: #ffffff;
+    border: 1px solid #edc881;
+    border-radius: 14px;
+    box-shadow: 0 12px 35px rgb(116 87 46 / 14%);
+    text-align: center;
+  }
+
+  .practiceDropOverlay strong {
+    font-size: 20px;
+  }
+
+  .practiceDropOverlay span {
+    color: #786956;
+    font-size: 12px;
+  }
+
+  .practiceHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 25px 28px;
+    background: #ffffff;
+    border-bottom: 1px solid #ead9bd;
+  }
+
+  .practiceHeader h2 {
+    margin: 5px 0 4px;
+    font-size: 23px;
+  }
+
+  .practiceHeader p {
+    margin: 0;
+    color: #52616d;
+    font-size: 13px;
+  }
+
+  .practiceFileBadge {
+    max-width: 320px;
+    overflow: hidden;
+    padding: 7px 11px;
+    color: #8a4b00;
+    background: #fff1d6;
+    border: 1px solid #f0d39a;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 750;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .practiceMessages {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 13px;
+    padding: 30px clamp(22px, 8vw, 80px);
+    overflow-y: auto;
+  }
+
+  .practiceUserMessage,
+  .practiceAssistantMessage {
+    max-width: 78%;
+    padding: 12px 15px;
+    border-radius: 17px;
+    font-size: 14px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+  }
+
+  .practiceMessageGroup {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .practiceUserMessage {
+    align-self: flex-end;
+    color: #ffffff;
+    background: #f59e0b;
+    border-bottom-right-radius: 5px;
+  }
+
+  .practiceAssistantMessage {
+    align-self: flex-start;
+    color: #3d3024;
+    background: #ffffff;
+    border: 1px solid #edc881;
+    border-bottom-left-radius: 5px;
+    box-shadow: 0 4px 16px rgb(116 87 46 / 7%);
+  }
+
+  .practiceFilePicker {
+    display: grid;
+    width: min(680px, 100%);
+    gap: 10px;
+    padding: 14px;
+    background: #ffffff;
+    border: 1px solid #edc881;
+    border-radius: 15px;
+    box-shadow: 0 8px 24px rgb(116 87 46 / 9%);
+  }
+
+  .practiceFilePickerHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 2px 3px 7px;
+  }
+
+  .practiceFilePickerHeader strong {
+    font-size: 14px;
+  }
+
+  .practiceFilePickerHeader button {
+    color: #8a4b00;
+    background: transparent;
+    border: 0;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .practiceFilePicker p {
+    margin: 0;
+    padding: 12px;
+    color: #786956;
+    background: #fffaf1;
+    border-radius: 9px;
+    font-size: 12px;
+  }
+
+  .practiceFileCards {
+    display: grid;
+    gap: 8px;
+  }
+
+  .practiceFileCard,
+  .selectedPracticeFileCard {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px;
+    background: #ffffff;
+    border: 1px solid #d5dfe5;
+    border-radius: 10px;
+  }
+
+  .selectedPracticeFileCard {
+    background: #fffaf1;
+    border-color: #f59e0b;
+    box-shadow: 0 0 0 2px rgb(245 158 11 / 10%);
+  }
+
+  .practiceFileSelect {
+    display: grid;
+    flex: 1;
+    min-width: 0;
+    gap: 3px;
+    padding: 3px;
+    color: #302a24;
+    background: transparent;
+    border: 0;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .practiceFileSelect strong {
+    overflow: hidden;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .practiceFileSelect span {
+    color: #71808a;
+    font-size: 10px;
+  }
+
+  .practiceFileCardActions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+
+  .practiceFileCardActions a,
+  .practiceFileCardActions button {
+    padding: 7px 9px;
+    color: #8a4b00;
+    background: #fff7e8;
+    border: 1px solid #e7c589;
+    border-radius: 7px;
+    font: inherit;
+    font-size: 10px;
+    font-weight: 750;
+    text-decoration: none;
+    cursor: pointer;
+  }
+
+  .practiceFileCardActions button {
+    color: #ffffff;
+    background: #f59e0b;
+    border-color: #f59e0b;
+  }
+
+  .practiceFileCardActions .practiceCancelButton {
+    color: #8c3e2f;
+    background: #ffffff;
+    border-color: #dba99e;
+  }
+
+  .practiceFileCardActions .practiceDeleteButton {
+    color: #ffffff;
+    background: #ad3a2a;
+    border-color: #ad3a2a;
+  }
+
+  .practiceFileCardActions .practiceSelectButton {
+    color: #8a4b00;
+    background: #fff1d6;
+    border-color: #e7c589;
+  }
+
+  .practiceImprovementCard {
+    display: grid;
+    width: min(680px, 100%);
+    gap: 12px;
+    padding: 14px;
+    background: #fffaf1;
+    border: 1px solid #f0d39a;
+    border-radius: 15px;
+  }
+
+  .practiceImprovementCard > strong {
+    color: #4f4031;
+    font-size: 13px;
+  }
+
+  .practiceImprovementCard label {
+    display: grid;
+    gap: 6px;
+    color: #4f4031;
+    font-size: 12px;
+    font-weight: 750;
+  }
+
+  .practiceImprovementCard textarea {
+    min-height: 82px;
+    resize: vertical;
+    padding: 11px 12px;
+    color: #302a24;
+    background: #ffffff;
+    border: 1px solid #d7c4a5;
+    border-radius: 9px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.45;
+  }
+
+  .practiceImprovementActions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .practiceImprovementActions button {
+    padding: 9px 11px;
+    color: #8a4b00;
+    background: #ffffff;
+    border: 1px solid #e7c589;
+    border-radius: 8px;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 750;
+    cursor: pointer;
+  }
+
+  .practiceImprovementActions button:first-child {
+    color: #ffffff;
+    background: #b65f00;
+    border-color: #b65f00;
+  }
+
+  .practiceComposer {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin: 0 clamp(18px, 6vw, 62px) 28px;
+    padding: 9px;
+    background: #ffffff;
+    border: 1px solid #d9c9b0;
+    border-radius: 18px;
+    box-shadow: 0 10px 30px rgb(92 67 32 / 10%);
+  }
+
+  .practiceComposer > input {
+    flex: 1;
+    min-width: 0;
+    padding: 10px 4px;
+    background: transparent;
+    border: 0;
+    outline: none;
+    font: inherit;
+    font-size: 14px;
+  }
+
+  .practiceComposer > button {
+    padding: 10px 14px;
+    color: #ffffff;
+    background: #f59e0b;
+    border: 0;
+    border-radius: 11px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 750;
+    cursor: pointer;
+  }
+
+  .practiceComposer > button:disabled {
+    background: #d7c7af;
+    cursor: not-allowed;
+  }
+
+  .practiceAddWrap {
+    position: relative;
+    flex: 0 0 auto;
+  }
+
+  .practiceComposer .practiceAddButton {
+    display: grid;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    place-items: center;
+    color: #6f6252;
+    background: #f5ead8;
+    border: 0;
+    border-radius: 50%;
+    font-size: 24px;
+    font-weight: 400;
+    cursor: pointer;
+  }
+
+  .practiceAddMenu {
+    position: absolute;
+    bottom: calc(100% + 14px);
+    left: 0;
+    display: grid;
+    width: min(390px, calc(100vw - 54px));
+    gap: 3px;
+    padding: 10px;
+    background: #ffffff;
+    border: 1px solid #ddd4c7;
+    border-radius: 16px;
+    box-shadow: 0 18px 45px rgb(52 42 29 / 16%);
+    z-index: 5;
+  }
+
+  .practiceAddMenu > span {
+    padding: 4px 8px 7px;
+    color: #8c8378;
+    font-size: 12px;
+  }
+
+  .practiceAddMenu button {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding: 10px;
+    color: #302a24;
+    background: transparent;
+    border: 0;
+    border-radius: 10px;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .practiceAddMenu button:hover {
+    background: #fff4dc;
+  }
+
+  .practiceAddMenu button > strong {
+    display: grid;
+    width: 28px;
+    height: 28px;
+    place-items: center;
+    color: #b65f00;
+    background: #fff1d6;
+    border-radius: 8px;
+  }
+
+  .practiceAddMenu button > span {
+    display: grid;
+    gap: 2px;
+  }
+
+  .practiceAddMenu b {
+    font-size: 13px;
+  }
+
+  .practiceAddMenu small {
+    color: #8c8378;
+    font-size: 10px;
+  }
+
+  .practiceHiddenInput {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    opacity: 0;
   }
   
   .chat {
@@ -823,8 +1449,46 @@
       margin-top: 0;
     }
 
+    .researcherChatHeader {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
     .chat {
       min-height: 100vh;
+    }
+
+    .practiceHeader {
+      align-items: flex-start;
+      flex-direction: column;
+      padding: 20px;
+    }
+
+    .practiceMessages {
+      padding: 22px 18px;
+    }
+
+    .practiceUserMessage,
+    .practiceAssistantMessage {
+      max-width: 92%;
+    }
+
+    .practiceComposer {
+      margin: 0 12px 18px;
+    }
+
+    .practiceFileCard {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .selectedPracticeFileCard {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .practiceFileCardActions {
+      justify-content: flex-start;
     }
   
     .header,

@@ -11,7 +11,65 @@ type Chunk = {
   page_number?: number | null;
   slide_number?: number | null;
   section?: string;
+  metadata?: Record<string, unknown>;
 };
+
+function normalizeQuestion(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function readTeacherCorrection(
+  chunks: Chunk[],
+  question: string,
+): string | null {
+  const normalizedQuestion = normalizeQuestion(question);
+
+  for (const chunk of [...chunks].reverse()) {
+    const metadata = chunk.metadata;
+    if (metadata?.researcher_correction !== true) continue;
+
+    const testedQuestion = metadata.tested_question;
+    const correctedAnswer = metadata.corrected_answer;
+    if (
+      typeof testedQuestion === "string" &&
+      typeof correctedAnswer === "string" &&
+      normalizeQuestion(testedQuestion) === normalizedQuestion
+    ) {
+      return correctedAnswer.trim();
+    }
+  }
+
+  return null;
+}
+
+function preservesTeacherWording(generated: string, teacherAnswer: string): boolean {
+  const words = (value: string) => value
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .match(/[\p{L}\p{N}]+/gu) ?? [];
+  const teacherWords = words(teacherAnswer);
+  if (teacherWords.length === 0) return true;
+
+  const generatedCounts = new Map<string, number>();
+  for (const word of words(generated)) {
+    generatedCounts.set(word, (generatedCounts.get(word) ?? 0) + 1);
+  }
+
+  let retained = 0;
+  for (const word of teacherWords) {
+    const count = generatedCounts.get(word) ?? 0;
+    if (count > 0) {
+      retained += 1;
+      generatedCounts.set(word, count - 1);
+    }
+  }
+  return retained / teacherWords.length >= 0.9;
+}
 
 export async function POST(request: Request) {
   try {
@@ -64,8 +122,15 @@ export async function POST(request: Request) {
       throw new Error("This file has not been trained yet.");
     }
 
+    const exactCorrection = readTeacherCorrection(chunks, body.question);
+
     const context = [...chunks]
-      .sort((a, b) => (a.page_number ?? a.slide_number ?? 9999) - (b.page_number ?? b.slide_number ?? 9999))
+      .sort((a, b) => {
+        const aCorrection = a.metadata?.researcher_correction === true ? 0 : 1;
+        const bCorrection = b.metadata?.researcher_correction === true ? 0 : 1;
+        return aCorrection - bCorrection ||
+          (a.page_number ?? a.slide_number ?? 9999) - (b.page_number ?? b.slide_number ?? 9999);
+      })
       .map((chunk, index) => [
         `[PART ${index + 1}]`,
         `Title: ${chunk.title ?? "Untitled"}`,
@@ -87,17 +152,20 @@ export async function POST(request: Request) {
       model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
       contents: [{
         role: "user",
-        parts: [{ text: `FILE: ${body.fileName}\n\nALL EXTRACTED CONTENT:\n${context}\n\nRECENT RESEARCHER CHAT:\n${history}\n\nQUESTION:\n${body.question}` }],
+        parts: [{ text: `FILE: ${body.fileName}\n\nALL EXTRACTED CONTENT:\n${context}\n\n${exactCorrection ? `AUTHORITATIVE TEACHER ANSWER FOR THIS EXACT QUESTION:\n${exactCorrection}\n\n` : ""}RECENT RESEARCHER CHAT:\n${history}\n\nQUESTION:\n${body.question}` }],
       }],
       config: {
         temperature: 0.1,
         maxOutputTokens: 4096,
-        systemInstruction: "Answer only from the selected file. Use all relevant parts, preserve page order, and explain clearly. For a walkthrough or summary, cover the entire extracted file rather than selecting only the most similar part. If extraction appears incomplete, say exactly what is missing.",
+        systemInstruction: "Answer only from the selected file. Teacher correction parts are authoritative and override conflicting original document text or earlier assistant answers. When an authoritative teacher answer is supplied for the exact question, preserve its content, meaning, facts, examples, numbers, names, warnings, and ordering. Keep at least 90% of the teacher's wording. Use Gemini only to minimally fix grammar, spelling, punctuation, and awkward phrasing. Do not add, remove, summarize, reinterpret, or contradict information. If the teacher answer is already clear, return it unchanged. Apply the same correction principles to clearly equivalent paraphrases. Use all relevant parts, preserve page order, and explain clearly. For a walkthrough or summary, cover the entire extracted file rather than selecting only the most similar part. If extraction appears incomplete, say exactly what is missing.",
       },
     });
 
-    const answer = response.text?.trim();
+    let answer = response.text?.trim();
     if (!answer) throw new Error("No answer was generated.");
+    if (exactCorrection && !preservesTeacherWording(answer, exactCorrection)) {
+      answer = exactCorrection;
+    }
 
     return Response.json({ answer, chunkCount: chunks.length });
   } catch (error: unknown) {

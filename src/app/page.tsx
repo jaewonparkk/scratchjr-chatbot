@@ -2,6 +2,7 @@
 
 import type {
   ChangeEvent,
+  DragEvent,
   FormEvent,
   ReactNode,
 } from "react";
@@ -66,6 +67,10 @@ type ResearcherMessage = {
   text: string;
 };
 
+type PracticeMessage = ResearcherMessage & {
+  improvable?: boolean;
+};
+
 function createMessageId(): string {
   return [
     Date.now(),
@@ -73,6 +78,15 @@ function createMessageId(): string {
       .toString(16)
       .slice(2),
   ].join("-");
+}
+
+function normalizeLearnedQuestion(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function renderMessageText(
@@ -128,7 +142,7 @@ export default function Home() {
   ] = useState(false);
 
   const [activeTab, setActiveTab] =
-    useState<"assistant" | "researcher">(
+    useState<"assistant" | "researcher" | "practice">(
       "assistant",
     );
 
@@ -165,10 +179,74 @@ export default function Home() {
   const [isSavingCorrection, setIsSavingCorrection] =
     useState(false);
 
+  const [improveQuestion, setImproveQuestion] =
+    useState("");
+
+  const [improveMessages, setImproveMessages] =
+    useState<ResearcherMessage[]>([]);
+
+  const [isTestingImprovement, setIsTestingImprovement] =
+    useState(false);
+
   const [latestFeedback, setLatestFeedback] =
     useState<{ question: string; answer: string } | null>(null);
 
   const [desiredAnswer, setDesiredAnswer] =
+    useState("");
+
+  const [proposedAnswer, setProposedAnswer] =
+    useState("");
+
+  const [isPreviewingImprovement, setIsPreviewingImprovement] =
+    useState(false);
+
+  const [awaitingImprovementConfirmation, setAwaitingImprovementConfirmation] =
+    useState(false);
+
+  const [learnedCorrections, setLearnedCorrections] =
+    useState<Record<string, string>>({});
+
+  const [practiceMessages, setPracticeMessages] =
+    useState<PracticeMessage[]>([
+      {
+        role: "assistant",
+        text: "Welcome to Researcher 2. Add a file with the + button, train it, and ask me to check what the assistant learned.",
+      },
+    ]);
+
+  const [practiceInput, setPracticeInput] =
+    useState("");
+
+  const [practiceSelectedFile, setPracticeSelectedFile] =
+    useState("");
+
+  const [practiceMenuOpen, setPracticeMenuOpen] =
+    useState(false);
+
+  const [practiceFilesOpen, setPracticeFilesOpen] =
+    useState(false);
+
+  const [isPracticeBusy, setIsPracticeBusy] =
+    useState(false);
+
+  const [isPracticeDragging, setIsPracticeDragging] =
+    useState(false);
+
+  const [practicePendingImprovement, setPracticePendingImprovement] =
+    useState<{
+      question: string;
+      originalAnswer: string;
+      correctedAnswer: string;
+      feedback: string;
+    } | null>(null);
+
+  const [practiceAwaitingConfirmation, setPracticeAwaitingConfirmation] =
+    useState(false);
+
+  const [practiceImprovementTarget, setPracticeImprovementTarget] =
+    useState<{ question: string; answer: string } | null>(null);
+
+  const [practiceFeedbackInput, setPracticeFeedbackInput] =
     useState("");
 
   const messagesEndRef =
@@ -180,6 +258,12 @@ export default function Home() {
     useRef<AbortController | null>(
       null,
     );
+
+  const practiceFileInputRef =
+    useRef<HTMLInputElement | null>(null);
+
+  const improveHistoryReadyRef =
+    useRef(false);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({
@@ -223,6 +307,68 @@ export default function Home() {
 
     void loadResearcherFiles();
   }, []);
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("blocks-bots-improve-chat");
+      if (saved) setImproveMessages(JSON.parse(saved) as ResearcherMessage[]);
+    } catch {
+      // Begin a new conversation if saved chat history is unavailable.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!improveHistoryReadyRef.current) {
+      improveHistoryReadyRef.current = true;
+      return;
+    }
+    try {
+      window.localStorage.setItem(
+        "blocks-bots-improve-chat",
+        JSON.stringify(improveMessages.slice(-100)),
+      );
+    } catch {
+      // Keep the conversation in memory for this session.
+    }
+  }, [improveMessages]);
+
+  useEffect(() => {
+    async function loadTeacherCorrections() {
+      let browserCorrections: Record<string, string> = {};
+      try {
+        const saved = window.localStorage.getItem("blocks-bots-teacher-corrections");
+        if (saved) browserCorrections = JSON.parse(saved) as Record<string, string>;
+      } catch {
+        // Continue with the server copy.
+      }
+
+      try {
+        const response = await fetch("/api/researcher/corrections", { cache: "no-store" });
+        const data = (await response.json()) as { corrections?: Record<string, string> };
+        const merged = { ...browserCorrections, ...(data.corrections ?? {}) };
+        setLearnedCorrections(merged);
+        window.localStorage.setItem(
+          "blocks-bots-teacher-corrections",
+          JSON.stringify(merged),
+        );
+      } catch {
+        setLearnedCorrections(browserCorrections);
+      }
+    }
+
+    void loadTeacherCorrections();
+  }, []);
+
+  useEffect(() => {
+    const firstAvailableFile = researcherFiles.find(
+      (file) => file.status === "trained" || file.status === "existing",
+    ) ?? researcherFiles[0];
+    if (!firstAvailableFile) return;
+
+    if (!selectedResearcherFile) {
+      setSelectedResearcherFile(firstAvailableFile.name);
+    }
+  }, [researcherFiles, selectedResearcherFile]);
 
   async function uploadResearchFile(
     event: ChangeEvent<HTMLInputElement>,
@@ -318,7 +464,7 @@ export default function Home() {
 
   async function untrainResearchFile(fileName: string) {
     if (!window.confirm(
-      `Cancel training for ${fileName}?\n\nThe original file will remain, but the assistant will stop using its trained chunks. You can train it again later.`,
+      `Remove ${fileName} from the assistant's trained knowledge?\n\nThe original file will remain and can be trained again later.`,
     )) return;
 
     setUploadMessage("");
@@ -381,58 +527,112 @@ export default function Home() {
     }
   }
 
-  async function saveLatestCorrection() {
-    const correction = desiredAnswer.trim();
-    if (
-      !selectedResearcherFile ||
-      !latestFeedback ||
-      correction.length < 10 ||
-      isSavingCorrection
-    ) return;
+  async function previewImprovement(instruction = desiredAnswer) {
+    const feedbackInstruction = instruction.trim();
+    if (!feedbackInstruction || isPreviewingImprovement) return;
 
-    if (!window.confirm(
-      `Save this improved answer to ${selectedResearcherFile} and retrain the assistant?\n\nThe tested question, the assistant's answer, and your corrected answer will be kept together.`,
-    )) return;
-
-    setIsSavingCorrection(true);
+    setIsPreviewingImprovement(true);
     setUploadMessage("");
     setUploadError("");
-
     try {
-      const file = researcherFiles.find((item) => item.name === selectedResearcherFile);
-      if (!file) throw new Error("Could not find the selected file.");
-
       const response = await fetch("/api/researcher/corrections", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          fileName: selectedResearcherFile,
-          filePath: file.id,
+          mode: "preview",
+          question: latestFeedback?.question,
+          assistantAnswer: latestFeedback?.answer,
+          feedbackInstruction,
+          history: improveMessages,
+        }),
+      });
+      const data = (await response.json()) as {
+        question?: string;
+        assistantAnswer?: string;
+        correctedAnswer?: string;
+        error?: string;
+      };
+      if (!response.ok || !data.question || !data.assistantAnswer || !data.correctedAnswer) {
+        throw new Error(data.error ?? "Could not update the answer.");
+      }
+      setLatestFeedback({ question: data.question, answer: data.assistantAnswer });
+      setProposedAnswer(data.correctedAnswer);
+    } catch (error: unknown) {
+      setUploadError(error instanceof Error ? error.message : "Could not update the answer.");
+    } finally {
+      setIsPreviewingImprovement(false);
+    }
+  }
+
+  function applyProposedAnswer(answer: string) {
+    if (!latestFeedback) return;
+    setLatestFeedback({ ...latestFeedback, answer });
+    setImproveMessages((messages) => {
+      const updated = [...messages];
+      for (let index = updated.length - 1; index >= 0; index -= 1) {
+        if (updated[index].role === "assistant") {
+          updated[index] = { role: "assistant", text: answer };
+          break;
+        }
+      }
+      return updated;
+    });
+  }
+
+  async function saveProposedImprovement() {
+    if (!latestFeedback || !proposedAnswer || isSavingCorrection) return;
+    setIsSavingCorrection(true);
+    setUploadMessage("");
+    setUploadError("");
+    try {
+      const response = await fetch("/api/researcher/corrections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "save",
           question: latestFeedback.question,
           assistantAnswer: latestFeedback.answer,
-          correctedAnswer: correction,
+          correctedAnswer: proposedAnswer,
+          feedbackInstruction: desiredAnswer,
         }),
       });
       const data = (await response.json()) as { message?: string; error?: string };
-      if (!response.ok) throw new Error(data.error ?? "Could not save the correction.");
+      if (!response.ok) throw new Error(data.error ?? "Could not save the improvement.");
 
-      setUploadMessage(data.message ?? "Correction saved and retrained.");
-      setResearcherFiles((files) =>
-        files.map((file) =>
-          file.name === selectedResearcherFile
-            ? { ...file, status: "trained" }
-            : file,
-        ),
-      );
-      setResearcherMessages((messages) => [
-        ...messages,
-        { role: "assistant", text: "Your improved answer was saved and the assistant was retrained." },
-      ]);
+      applyProposedAnswer(proposedAnswer);
+      const key = normalizeLearnedQuestion(latestFeedback.question);
+      const nextCorrections = { ...learnedCorrections, [key]: proposedAnswer };
+      setLearnedCorrections(nextCorrections);
+      window.localStorage.setItem("blocks-bots-teacher-corrections", JSON.stringify(nextCorrections));
+      setUploadMessage(data.message ?? "Improvement saved for future responses.");
       setDesiredAnswer("");
+      setProposedAnswer("");
     } catch (error: unknown) {
-      setUploadError(error instanceof Error ? error.message : "Could not save the correction.");
+      setUploadError(error instanceof Error ? error.message : "Could not save the improvement.");
     } finally {
       setIsSavingCorrection(false);
+    }
+  }
+
+  function keepProposedForChat() {
+    if (!proposedAnswer) return;
+    applyProposedAnswer(proposedAnswer);
+    setUploadMessage("Answer updated for this chat only. Future responses were not retrained.");
+    setDesiredAnswer("");
+    setProposedAnswer("");
+  }
+
+  function selectAnswerForImprovement(index: number) {
+    const answer = improveMessages[index];
+    if (!answer || answer.role !== "assistant") return;
+    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+      const previous = improveMessages[cursor];
+      if (previous.role === "user") {
+        setLatestFeedback({ question: previous.text, answer: answer.text });
+        setDesiredAnswer("");
+        setProposedAnswer("");
+        return;
+      }
     }
   }
 
@@ -455,8 +655,6 @@ export default function Home() {
       const data = (await response.json()) as { answer?: string; error?: string };
       if (!response.ok || !data.answer) throw new Error(data.error ?? "Could not check the file.");
       setResearcherMessages((messages) => [...messages, { role: "assistant", text: data.answer as string }]);
-      setLatestFeedback({ question, answer: data.answer });
-      setDesiredAnswer("");
     } catch (error: unknown) {
       setResearcherMessages((messages) => [...messages, {
         role: "assistant",
@@ -467,9 +665,495 @@ export default function Home() {
     }
   }
 
+  async function testImprovedAnswer(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const question = improveQuestion.trim();
+    if (!question || isTestingImprovement) return;
+
+    if (awaitingImprovementConfirmation) {
+      setImproveQuestion("");
+      setImproveMessages((messages) => [...messages, { role: "user", text: question }]);
+      if (/^(?:yes|y|응|네|좋아|그래)[!?.\s]*$/i.test(question)) {
+        setAwaitingImprovementConfirmation(false);
+        await saveProposedImprovement();
+        setImproveMessages((messages) => [
+          ...messages,
+          { role: "assistant", text: "Done. This version will be used in future responses." },
+        ]);
+      } else {
+        setAwaitingImprovementConfirmation(false);
+        setImproveMessages((messages) => [
+          ...messages,
+          { role: "assistant", text: "Okay, I didn’t save it. You can request another version or keep editing." },
+        ]);
+      }
+      return;
+    }
+
+    if (proposedAnswer && /(?:좋아|이걸로|이\s*답변|go with|use this|looks good|perfect)/i.test(question)) {
+      setImproveQuestion("");
+      setAwaitingImprovementConfirmation(true);
+      setImproveMessages((messages) => [
+        ...messages,
+        { role: "user", text: question },
+        { role: "assistant", text: "Use this version in future responses? Yes or No?" },
+      ]);
+      return;
+    }
+
+    if (proposedAnswer && /(?:more answers?|another (?:answer|version)|다른 답변|다시)/i.test(question)) {
+      setImproveQuestion("");
+      await previewImprovement(`${desiredAnswer}\nGive a meaningfully different alternative from this version: ${proposedAnswer}`);
+      return;
+    }
+
+    const feedbackIntent = /(?:last\s+time\s+you\s+answered|i\s+(?:do\s+not|don['’]t)\s+like\s+(?:this|that)\s+answer|change\s+(?:this|that|the)\s+answer|i\s+want\s+you\s+to|(?:please\s+)?(?:make|include|add|remove|shorten|rewrite)\b|say\s+["“'])/i.test(question);
+    if (feedbackIntent) {
+      const replacement = question.match(
+        /(?:change\s+(?:this|that|the)\s+answer\s+to|answer\s+(?:to|should\s+be))\s*[:\-]?\s*([\s\S]+)/i,
+      )?.[1]?.trim();
+      setImproveQuestion("");
+      const instruction = replacement ?? question;
+      setDesiredAnswer(instruction);
+      await previewImprovement(instruction);
+      return;
+    }
+
+    const learnedAnswer = learnedCorrections[normalizeLearnedQuestion(question)];
+    if (learnedAnswer) {
+      setImproveMessages((messages) => [
+        ...messages,
+        { role: "user", text: question },
+        { role: "assistant", text: learnedAnswer },
+      ]);
+      setImproveQuestion("");
+      setLatestFeedback({ question, answer: learnedAnswer });
+      return;
+    }
+
+    const history = improveMessages;
+    setImproveMessages((messages) => [...messages, { role: "user", text: question }]);
+    setImproveQuestion("");
+    setIsTestingImprovement(true);
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question, history }),
+      });
+      const data = (await response.json()) as { answer?: string; error?: string };
+      if (!response.ok || !data.answer) throw new Error(data.error ?? "Could not test the answer.");
+      setImproveMessages((messages) => [...messages, { role: "assistant", text: data.answer as string }]);
+      setLatestFeedback({ question, answer: data.answer });
+      setDesiredAnswer("");
+    } catch (error: unknown) {
+      setImproveMessages((messages) => [...messages, {
+        role: "assistant",
+        text: error instanceof Error ? error.message : "Could not test the answer.",
+      }]);
+    } finally {
+      setIsTestingImprovement(false);
+    }
+  }
+
   function stopGenerating() {
     abortControllerRef.current
       ?.abort();
+  }
+
+  function addPracticeMessage(
+    role: ResearcherMessage["role"],
+    text: string,
+    improvable = false,
+  ) {
+    setPracticeMessages((current) => [...current, { role, text, improvable }]);
+  }
+
+  function showPracticeFiles() {
+    setPracticeMenuOpen(false);
+    setPracticeFilesOpen(true);
+    if (researcherFiles.length === 0) {
+      addPracticeMessage("assistant", "No files yet. Use + → Upload a file to add your first document.");
+    }
+  }
+
+  async function trainPracticeFile(file: ResearcherFile) {
+    if (isPracticeBusy) return;
+    setPracticeSelectedFile(file.name);
+    setIsPracticeBusy(true);
+    try {
+      const response = await fetch("/api/researcher/train", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName: file.name, filePath: file.id }),
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Training failed.");
+      setResearcherFiles((files) => files.map((item) =>
+        item.name === file.name ? { ...item, status: "trained" } : item,
+      ));
+      addPracticeMessage("assistant", `${file.name} is trained and selected. Ask me any question about it.`);
+    } catch (error: unknown) {
+      addPracticeMessage("assistant", error instanceof Error ? error.message : "Training failed.");
+    } finally {
+      setIsPracticeBusy(false);
+    }
+  }
+
+  async function cancelPracticeTraining(file: ResearcherFile) {
+    if (isPracticeBusy || !window.confirm(`Remove ${file.name} from trained knowledge? The original file will be kept.`)) return;
+    setIsPracticeBusy(true);
+    try {
+      const response = await fetch("/api/researcher/untrain", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName: file.name, filePath: file.id }),
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Could not cancel training.");
+      setResearcherFiles((files) => files.map((item) =>
+        item.name === file.name ? { ...item, status: "untrained" } : item,
+      ));
+      addPracticeMessage("assistant", `Training was removed from ${file.name}. The original file was kept.`);
+    } catch (error: unknown) {
+      addPracticeMessage("assistant", error instanceof Error ? error.message : "Could not cancel training.");
+    } finally {
+      setIsPracticeBusy(false);
+    }
+  }
+
+  async function deletePracticeFile(file: ResearcherFile) {
+    if (isPracticeBusy || !window.confirm(`Permanently delete ${file.name}? This cannot be undone.`)) return;
+    setIsPracticeBusy(true);
+    try {
+      const response = await fetch("/api/researcher/files", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fileName: file.name, filePath: file.id }),
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Could not delete the file.");
+      setResearcherFiles((files) => files.filter((item) => item.name !== file.name));
+      if (practiceSelectedFile === file.name) setPracticeSelectedFile("");
+      addPracticeMessage("assistant", `${file.name} was permanently deleted.`);
+    } catch (error: unknown) {
+      addPracticeMessage("assistant", error instanceof Error ? error.message : "Could not delete the file.");
+    } finally {
+      setIsPracticeBusy(false);
+    }
+  }
+
+  async function uploadPracticeSelectedFile(file: File) {
+    if (!file || isPracticeBusy) return;
+
+    setPracticeMenuOpen(false);
+    setIsPracticeBusy(true);
+    addPracticeMessage("user", `Add ${file.name}`);
+    try {
+      const formData = new FormData();
+      formData.set("file", file);
+      const response = await fetch("/api/researcher/files", { method: "POST", body: formData });
+      const data = (await response.json()) as { file?: ResearcherFile; error?: string };
+      if (!response.ok || !data.file) throw new Error(data.error ?? "Could not upload the file.");
+      const uploaded = data.file;
+      setResearcherFiles((current) => [uploaded, ...current]);
+      setPracticeSelectedFile(uploaded.name);
+      setPracticeFilesOpen(true);
+      addPracticeMessage(
+        "assistant",
+        `${uploaded.name} is attached and selected. Use the Train file button in My files when you’re ready.`,
+      );
+    } catch (error: unknown) {
+      addPracticeMessage("assistant", error instanceof Error ? error.message : "Could not upload the file.");
+    } finally {
+      setIsPracticeBusy(false);
+    }
+  }
+
+  async function uploadPracticeFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) await uploadPracticeSelectedFile(file);
+  }
+
+  function handlePracticeDrop(event: DragEvent<HTMLElement>) {
+    event.preventDefault();
+    setIsPracticeDragging(false);
+    const file = event.dataTransfer.files?.[0];
+    if (file) void uploadPracticeSelectedFile(file);
+  }
+
+  function findPracticeFile(command: string): ResearcherFile | undefined {
+    const number = command.match(/\b(\d{1,3})\b/)?.[1];
+    if (number) return researcherFiles[Number(number) - 1];
+    const named = researcherFiles.find((file) =>
+      command.toLocaleLowerCase().includes(file.name.toLocaleLowerCase()),
+    );
+    return named ?? researcherFiles.find((file) => file.name === practiceSelectedFile);
+  }
+
+  function selectPracticeAnswerForImprovement(index: number) {
+    const answer = practiceMessages[index];
+    if (!answer || answer.role !== "assistant" || !answer.improvable) return;
+    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+      const previous = practiceMessages[cursor];
+      if (previous.role === "user") {
+        setPracticeImprovementTarget({ question: previous.text, answer: answer.text });
+        setPracticeFeedbackInput("");
+        setPracticePendingImprovement(null);
+        setPracticeAwaitingConfirmation(false);
+        return;
+      }
+    }
+  }
+
+  async function previewPracticeImprovement(
+    question: string,
+    originalAnswer: string,
+    feedback: string,
+  ) {
+    setIsPracticeBusy(true);
+    try {
+      const response = await fetch("/api/researcher/corrections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "preview",
+          question,
+          assistantAnswer: originalAnswer,
+          feedbackInstruction: feedback,
+        }),
+      });
+      const data = (await response.json()) as { correctedAnswer?: string; error?: string };
+      if (!response.ok || !data.correctedAnswer) throw new Error(data.error ?? "Could not improve the answer.");
+      setPracticePendingImprovement({ question, originalAnswer, correctedAnswer: data.correctedAnswer, feedback });
+      setPracticeAwaitingConfirmation(false);
+    } catch (error: unknown) {
+      addPracticeMessage("assistant", error instanceof Error ? error.message : "Could not improve the answer.");
+    } finally {
+      setIsPracticeBusy(false);
+    }
+  }
+
+  async function previewPracticeFeedbackFromHistory(feedback: string) {
+    setIsPracticeBusy(true);
+    try {
+      const response = await fetch("/api/researcher/corrections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "preview",
+          feedbackInstruction: feedback,
+          history: practiceMessages,
+        }),
+      });
+      const data = (await response.json()) as {
+        question?: string;
+        assistantAnswer?: string;
+        correctedAnswer?: string;
+        error?: string;
+      };
+      if (!response.ok || !data.question || !data.assistantAnswer || !data.correctedAnswer) {
+        throw new Error(data.error ?? "I couldn't identify the answer you wanted to improve.");
+      }
+      setPracticeImprovementTarget({ question: data.question, answer: data.assistantAnswer });
+      setPracticeFeedbackInput(feedback);
+      setPracticePendingImprovement({
+        question: data.question,
+        originalAnswer: data.assistantAnswer,
+        correctedAnswer: data.correctedAnswer,
+        feedback,
+      });
+      setPracticeAwaitingConfirmation(false);
+    } catch (error: unknown) {
+      addPracticeMessage(
+        "assistant",
+        error instanceof Error ? error.message : "I couldn't identify the answer you wanted to improve.",
+      );
+    } finally {
+      setIsPracticeBusy(false);
+    }
+  }
+
+  async function savePracticeImprovement() {
+    if (!practicePendingImprovement || isPracticeBusy) return;
+    setIsPracticeBusy(true);
+    try {
+      const response = await fetch("/api/researcher/corrections", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "save",
+          question: practicePendingImprovement.question,
+          assistantAnswer: practicePendingImprovement.originalAnswer,
+          correctedAnswer: practicePendingImprovement.correctedAnswer,
+          feedbackInstruction: practicePendingImprovement.feedback,
+        }),
+      });
+      const data = (await response.json()) as { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Could not save the improvement.");
+      const key = normalizeLearnedQuestion(practicePendingImprovement.question);
+      const nextCorrections = { ...learnedCorrections, [key]: practicePendingImprovement.correctedAnswer };
+      setLearnedCorrections(nextCorrections);
+      window.localStorage.setItem("blocks-bots-teacher-corrections", JSON.stringify(nextCorrections));
+      addPracticeMessage("assistant", "Improvement saved. This version will be used in future responses.");
+      setPracticePendingImprovement(null);
+      setPracticeImprovementTarget(null);
+      setPracticeFeedbackInput("");
+      setPracticeAwaitingConfirmation(false);
+    } catch (error: unknown) {
+      addPracticeMessage("assistant", error instanceof Error ? error.message : "Could not save the improvement.");
+    } finally {
+      setIsPracticeBusy(false);
+    }
+  }
+
+  function keepPracticeImprovementForChat() {
+    if (!practicePendingImprovement) return;
+    addPracticeMessage("assistant", practicePendingImprovement.correctedAnswer, true);
+    addPracticeMessage("assistant", "Kept for this chat only. Future responses were not retrained.");
+    setPracticePendingImprovement(null);
+    setPracticeImprovementTarget(null);
+    setPracticeFeedbackInput("");
+    setPracticeAwaitingConfirmation(false);
+  }
+
+  async function submitPracticeMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const command = practiceInput.trim();
+    if (!command || isPracticeBusy) return;
+    setPracticeInput("");
+    addPracticeMessage("user", command);
+
+    if (practiceAwaitingConfirmation && practicePendingImprovement) {
+      if (/^(?:yes|y|응|네|좋아|그래)[!?.\s]*$/i.test(command)) {
+        setPracticeAwaitingConfirmation(false);
+        await savePracticeImprovement();
+      } else {
+        setPracticeAwaitingConfirmation(false);
+        addPracticeMessage("assistant", "Okay, I didn’t save it. You can generate another version or keep editing.");
+      }
+      return;
+    }
+
+    if (practicePendingImprovement && /(?:좋아|이걸로|go with|use this|looks good|perfect)/i.test(command)) {
+      setPracticeAwaitingConfirmation(true);
+      return;
+    }
+
+    if (practicePendingImprovement && /(?:more answers?|another (?:answer|version)|다른 답변|다시)/i.test(command)) {
+      await previewPracticeImprovement(
+        practicePendingImprovement.question,
+        practicePendingImprovement.originalAnswer,
+        `${practicePendingImprovement.feedback}\nGive a meaningfully different alternative from this version: ${practicePendingImprovement.correctedAnswer}`,
+      );
+      return;
+    }
+
+    if (/^save improvement$/i.test(command) && practicePendingImprovement) {
+      await savePracticeImprovement();
+      return;
+    }
+
+    if (/^keep (?:only )?for (?:this )?chat$/i.test(command) && practicePendingImprovement) {
+      keepPracticeImprovementForChat();
+      return;
+    }
+
+    if (/^improve (?:this |the |last )?answer[.!?\s]*$/i.test(command)) {
+      for (let index = practiceMessages.length - 1; index >= 0; index -= 1) {
+        if (practiceMessages[index].role === "assistant" && practiceMessages[index].improvable) {
+          selectPracticeAnswerForImprovement(index);
+          return;
+        }
+      }
+      addPracticeMessage("assistant", "Tell me which earlier answer you want changed, or quote a few words from it.");
+      return;
+    }
+
+    const practiceFeedbackIntent = /(?:last\s+time\s+(?:you\s+)?(?:said|answered)|you\s+(?:said|answered)\s+["“']|i\s+want\s+you\s+to\s+improve|improve\s+this\s+answer|change\s+(?:what\s+you\s+said|that\s+answer)|i\s+(?:do\s+not|don['’]t)\s+like\s+(?:that|this)\s+answer)/i.test(command);
+    if (practiceFeedbackIntent) {
+      await previewPracticeFeedbackFromHistory(command);
+      return;
+    }
+
+    if (/^(?:show|list|view)?\s*(?:my\s+)?files?\b/i.test(command)) {
+      showPracticeFiles();
+      return;
+    }
+
+    const targetFile = findPracticeFile(command);
+    if (/\bselect\b/i.test(command)) {
+      if (!targetFile) {
+        addPracticeMessage("assistant", "I couldn't identify that file. Say “show files” to see the numbered list.");
+      } else {
+        setPracticeSelectedFile(targetFile.name);
+        addPracticeMessage("assistant", `${targetFile.name} is now selected.`);
+      }
+      return;
+    }
+
+    if (/\b(?:train|retrain|process|index)\b/i.test(command)) {
+      if (!targetFile) {
+        addPracticeMessage("assistant", "Choose a file first. Use + to upload one or say “show files.”");
+        return;
+      }
+      setIsPracticeBusy(true);
+      try {
+        const response = await fetch("/api/researcher/train", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fileName: targetFile.name, filePath: targetFile.id }),
+        });
+        const data = (await response.json()) as { error?: string };
+        if (!response.ok) throw new Error(data.error ?? "Training failed.");
+        setPracticeSelectedFile(targetFile.name);
+        setResearcherFiles((files) => files.map((file) =>
+          file.name === targetFile.name ? { ...file, status: "trained" } : file,
+        ));
+        addPracticeMessage("assistant", `${targetFile.name} is trained. Ask me any question about that file.`);
+      } catch (error: unknown) {
+        addPracticeMessage("assistant", error instanceof Error ? error.message : "Training failed.");
+      } finally {
+        setIsPracticeBusy(false);
+      }
+      return;
+    }
+
+    const learnedPracticeAnswer = learnedCorrections[normalizeLearnedQuestion(command)];
+    if (learnedPracticeAnswer) {
+      addPracticeMessage("assistant", learnedPracticeAnswer, true);
+      return;
+    }
+
+    setIsPracticeBusy(true);
+    try {
+      const wantsFileOnly = /^(?:check|ask)\s+(?:this|selected)\s+file\s*[:\-]?/i.test(command);
+      if (wantsFileOnly && (!targetFile || (targetFile.status !== "trained" && targetFile.status !== "existing"))) {
+        throw new Error("Select a trained file from + → My files, or use its Train button first.");
+      }
+      const question = command.replace(/^(?:check|ask)\s+(?:this|selected)\s+file\s*[:\-]?\s*/i, "");
+      const response = await fetch(wantsFileOnly ? "/api/researcher/chat" : "/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(wantsFileOnly ? {
+          fileName: targetFile?.name,
+          question,
+          history: practiceMessages,
+        } : {
+          question: command,
+          history: practiceMessages,
+        }),
+      });
+      const data = (await response.json()) as { answer?: string; error?: string };
+      if (!response.ok || !data.answer) throw new Error(data.error ?? "The assistant could not answer.");
+      addPracticeMessage("assistant", data.answer, true);
+    } catch (error: unknown) {
+      addPracticeMessage("assistant", error instanceof Error ? error.message : "The assistant could not answer.");
+    } finally {
+      setIsPracticeBusy(false);
+    }
   }
 
   async function handleSubmit(
@@ -504,6 +1188,20 @@ export default function Home() {
     );
 
     setInput("");
+
+    const learnedAnswer = learnedCorrections[normalizeLearnedQuestion(question)];
+    if (learnedAnswer) {
+      setMessages((currentMessages) => [
+        ...currentMessages,
+        {
+          id: createMessageId(),
+          role: "assistant",
+          text: learnedAnswer,
+        },
+      ]);
+      return;
+    }
+
     setIsLoading(true);
 
     const controller =
@@ -666,6 +1364,20 @@ export default function Home() {
           >
             Researcher
           </button>
+
+          <button
+            type="button"
+            className={
+              activeTab === "practice"
+                ? styles.activeTab
+                : styles.tab
+            }
+            onClick={() => {
+              setActiveTab("practice");
+            }}
+          >
+            Researcher 2
+          </button>
         </nav>
 
         {activeTab === "researcher" ? (
@@ -691,7 +1403,7 @@ export default function Home() {
               className={researcherView === "files" ? styles.activeResearcherView : undefined}
               onClick={() => { setResearcherView("files"); }}
             >
-              Files
+              Files &amp; Training
             </button>
             <button
               type="button"
@@ -700,7 +1412,7 @@ export default function Home() {
               className={researcherView === "improve" ? styles.activeResearcherView : undefined}
               onClick={() => { setResearcherView("improve"); }}
             >
-              Improve answers
+              Improve Answer
             </button>
           </div>
 
@@ -762,7 +1474,7 @@ export default function Home() {
                       target="_blank"
                       rel="noreferrer"
                     >
-                      View
+                      View file
                     </a>
                     <a
                       className={styles.fileLink}
@@ -779,8 +1491,8 @@ export default function Home() {
                       {trainingFile === file.name
                         ? "Training..."
                         : file.status === "trained"
-                          ? "Retrain"
-                          : "Train"}
+                          ? "Retrain file"
+                          : "Train file"}
                     </button>
                     <button
                       type="button"
@@ -788,7 +1500,7 @@ export default function Home() {
                       disabled={trainingFile !== null}
                       onClick={() => { void untrainResearchFile(file.name); }}
                     >
-                      Cancel
+                      Remove training
                     </button>
                     <button
                       type="button"
@@ -796,7 +1508,7 @@ export default function Home() {
                       disabled={trainingFile !== null}
                       onClick={() => { void deleteResearchFile(file.name); }}
                     >
-                      Delete
+                      Delete file
                     </button>
                   </div>
                 </div>
@@ -807,23 +1519,11 @@ export default function Home() {
 
           <div className={styles.pipelineNote}>
             <strong>No terminal needed</strong>
-            <span>Select Train and the server will process and index the file automatically.</span>
+            <span>Select Train file and the server will process and index it automatically.</span>
           </div>
           </div>
 
-          <div className={styles.researcherPanel} hidden={researcherView !== "improve"}>
-
-          {uploadMessage ? (
-            <p className={styles.uploadSuccess}>
-              {uploadMessage}
-            </p>
-          ) : null}
-
-          {uploadError ? (
-            <p className={styles.uploadError}>
-              {uploadError}
-            </p>
-          ) : null}
+          <div className={styles.researcherPanel} hidden={researcherView !== "files"}>
 
           <section className={styles.researcherChat}>
             <div className={styles.researcherChatHeader}>
@@ -836,8 +1536,6 @@ export default function Home() {
                 onChange={(event) => {
                   setSelectedResearcherFile(event.target.value);
                   setResearcherMessages([]);
-                  setLatestFeedback(null);
-                  setDesiredAnswer("");
                 }}
               >
                 <option value="">Choose a file</option>
@@ -878,59 +1576,451 @@ export default function Home() {
             </form>
 
           </section>
+          </div>
+
+          <div className={styles.researcherPanel} hidden={researcherView !== "improve"}>
+
+          {uploadMessage ? (
+            <p className={styles.uploadSuccess}>
+              {uploadMessage}
+            </p>
+          ) : null}
+
+          {uploadError ? (
+            <p className={styles.uploadError}>
+              {uploadError}
+            </p>
+          ) : null}
+
+          <section className={`${styles.researcherChat} ${styles.improveChat}`}>
+            <div className={styles.researcherChatHeader}>
+              <div>
+                <span className={styles.chatStatus}>Improve Answer</span>
+                <h3>Chat with the assistant</h3>
+                <p>Ask a question, then tell the same chatbot what you want changed.</p>
+              </div>
+            </div>
+
+            <div className={styles.researcherChatMessages}>
+              {improveMessages.length === 0 ? (
+                <div className={styles.researcherAssistantMessage}>
+                  Ask me any question teachers might ask. If you dislike my answer, use the feedback box below or simply say “change this answer to…”
+                </div>
+              ) : improveMessages.map((message, index) => (
+                <div key={`${message.role}-${index}`} className={styles.improveMessageGroup}>
+                  <div
+                    className={message.role === "user" ? styles.researcherUserMessage : styles.researcherAssistantMessage}
+                  >
+                    {message.text}
+                  </div>
+                  {message.role === "assistant" && index > 0 ? (
+                    <button
+                      type="button"
+                      className={styles.improveAnswerButton}
+                      onClick={() => { selectAnswerForImprovement(index); }}
+                    >
+                      Improve answer
+                    </button>
+                  ) : null}
+                </div>
+              ))}
+              {isTestingImprovement ? <div className={styles.researcherAssistantMessage}>Thinking...</div> : null}
+            </div>
+
+            <form className={styles.researcherChatForm} onSubmit={testImprovedAnswer}>
+              <input
+                value={improveQuestion}
+                onChange={(event) => { setImproveQuestion(event.target.value); }}
+                placeholder="Message the trained assistant..."
+                disabled={isTestingImprovement}
+              />
+              <button type="submit" disabled={!improveQuestion.trim() || isTestingImprovement}>
+                Test
+              </button>
+            </form>
+          </section>
 
           <section className={styles.feedbackEditor}>
             <div className={styles.feedbackHeading}>
               <span className={styles.feedbackStep}>Teacher feedback</span>
-              <h3>How should the assistant answer instead?</h3>
-              <p>Test an answer above, then write the response you want teachers to receive.</p>
+              <h3>What would you like to improve?</h3>
+              <p>You can refer to any earlier answer naturally—no need to ask the question again first.</p>
+            </div>
+
+            <div className={styles.feedbackConversation}>
+              {latestFeedback ? (
+                <>
+                  <div className={styles.feedbackQuestion}>
+                    <span>You asked</span>
+                    {latestFeedback.question}
+                  </div>
+                  <div className={styles.researcherAssistantMessage}>
+                    {latestFeedback.answer}
+                  </div>
+                </>
+              ) : (
+                <div className={styles.researcherAssistantMessage}>
+                  Tell me what I said before and what you want changed. For example: “Last time you explained pairing, the answer was too technical. Make it teacher-friendly.”
+                </div>
+              )}
             </div>
 
             <label>
-              Question tested
-              <textarea
-                value={latestFeedback?.question ?? ""}
-                placeholder="Ask a question in the chat above first."
-                readOnly
-              />
-            </label>
-
-            <label>
-              Assistant answered
-              <textarea
-                value={latestFeedback?.answer ?? ""}
-                placeholder="The assistant's latest answer will appear here."
-                readOnly
-              />
-            </label>
-
-            <label>
-              I want it to answer
+              Your feedback
               <textarea
                 value={desiredAnswer}
                 onChange={(event) => { setDesiredAnswer(event.target.value); }}
-                placeholder="Write the complete, correct answer here."
-                disabled={!latestFeedback || isSavingCorrection}
+                placeholder={latestFeedback
+                  ? "Make it shorter, friendlier, or correct a step..."
+                  : "Last time you answered about... Make it shorter, friendlier, or correct a step..."}
+                disabled={isPreviewingImprovement || isSavingCorrection}
               />
             </label>
 
+            {!proposedAnswer ? (
             <div className={styles.feedbackActions}>
-              <span>This saves the feedback with the selected file and retrains its knowledge.</span>
               <button
                 type="button"
-                disabled={
-                  !selectedResearcherFile ||
-                  !latestFeedback ||
-                  desiredAnswer.trim().length < 10 ||
-                  isSavingCorrection
-                }
-                onClick={() => { void saveLatestCorrection(); }}
+                disabled={!desiredAnswer.trim() || isPreviewingImprovement}
+                onClick={() => { void previewImprovement(); }}
               >
-                {isSavingCorrection ? "Saving & retraining..." : "Save improved answer & retrain"}
+                {isPreviewingImprovement ? "Updating..." : "Update answer"}
+              </button>
+              <button
+                type="button"
+                className={styles.secondaryFeedbackButton}
+                onClick={() => {
+                  setLatestFeedback(null);
+                  setDesiredAnswer("");
+                  setProposedAnswer("");
+                }}
+              >
+                Cancel
               </button>
             </div>
+            ) : (
+              <div className={styles.proposedImprovement}>
+                <div className={styles.researcherAssistantMessage}>{proposedAnswer}</div>
+                <strong>{awaitingImprovementConfirmation
+                  ? "You like this version. Save it for future responses?"
+                  : "Answer updated. Use this version in future responses?"}</strong>
+                <div className={styles.proposedImprovementActions}>
+                  {awaitingImprovementConfirmation ? (
+                    <>
+                      <button
+                        type="button"
+                        disabled={isSavingCorrection}
+                        onClick={() => {
+                          setAwaitingImprovementConfirmation(false);
+                          void saveProposedImprovement();
+                        }}
+                      >
+                        Yes
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.secondaryFeedbackButton}
+                        onClick={() => { setAwaitingImprovementConfirmation(false); }}
+                      >
+                        No
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                  <button
+                    type="button"
+                    disabled={isSavingCorrection}
+                    onClick={() => { void saveProposedImprovement(); }}
+                  >
+                    {isSavingCorrection ? "Saving..." : "Save improvement"}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.secondaryFeedbackButton}
+                    disabled={isSavingCorrection}
+                    onClick={keepProposedForChat}
+                  >
+                    Keep only for this chat
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.secondaryFeedbackButton}
+                    disabled={isPreviewingImprovement || isSavingCorrection}
+                    onClick={() => {
+                      void previewImprovement(`${desiredAnswer}\nGive a meaningfully different alternative from this version: ${proposedAnswer}`);
+                    }}
+                  >
+                    {isPreviewingImprovement ? "Generating..." : "More answers"}
+                  </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
           </section>
           </div>
+        </section>
+        ) : activeTab === "practice" ? (
+        <section
+          className={styles.practiceChat}
+          onDragEnter={(event) => {
+            event.preventDefault();
+            if (event.dataTransfer.types.includes("Files")) setIsPracticeDragging(true);
+          }}
+          onDragOver={(event) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+          }}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setIsPracticeDragging(false);
+            }
+          }}
+          onDrop={handlePracticeDrop}
+        >
+          <header className={styles.practiceHeader}>
+            <div>
+              <span className={styles.eyebrow}>Chat-based workspace</span>
+              <h2>Researcher 2</h2>
+              <p>Upload, train, and check classroom files without leaving the conversation.</p>
+            </div>
+            {practiceSelectedFile ? (
+              <span className={styles.practiceFileBadge}>{practiceSelectedFile}</span>
+            ) : null}
+          </header>
+
+          {isPracticeDragging ? (
+            <div className={styles.practiceDropOverlay}>
+              <div>
+                <strong>Drop your file here</strong>
+                <span>PDF, DOCX, PPTX, or image · max 25 MB</span>
+              </div>
+            </div>
+          ) : null}
+
+          <div className={styles.practiceMessages}>
+            {practiceMessages.map((message, index) => (
+              <div key={`${message.role}-${index}`} className={styles.practiceMessageGroup}>
+                <div className={message.role === "user" ? styles.practiceUserMessage : styles.practiceAssistantMessage}>
+                  {message.text}
+                </div>
+                {message.role === "assistant" && message.improvable ? (
+                  <button
+                    type="button"
+                    className={styles.improveAnswerButton}
+                    onClick={() => { selectPracticeAnswerForImprovement(index); }}
+                  >
+                    Improve answer
+                  </button>
+                ) : null}
+              </div>
+            ))}
+            {practiceImprovementTarget && !practicePendingImprovement ? (
+              <div className={styles.practiceImprovementCard}>
+                <span className={styles.feedbackStep}>Improve selected answer</span>
+                <div className={styles.practiceAssistantMessage}>{practiceImprovementTarget.answer}</div>
+                <label>
+                  How should this answer change?
+                  <textarea
+                    value={practiceFeedbackInput}
+                    onChange={(event) => { setPracticeFeedbackInput(event.target.value); }}
+                    placeholder="Make it shorter, friendlier, or correct a step..."
+                    disabled={isPracticeBusy}
+                  />
+                </label>
+                <div className={styles.practiceImprovementActions}>
+                  <button
+                    type="button"
+                    disabled={!practiceFeedbackInput.trim() || isPracticeBusy}
+                    onClick={() => {
+                      void previewPracticeImprovement(
+                        practiceImprovementTarget.question,
+                        practiceImprovementTarget.answer,
+                        practiceFeedbackInput,
+                      );
+                    }}
+                  >
+                    Update answer
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPracticeImprovementTarget(null);
+                      setPracticeFeedbackInput("");
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {practicePendingImprovement ? (
+              <div className={styles.practiceImprovementCard}>
+                <div className={styles.practiceAssistantMessage}>
+                  {practicePendingImprovement.correctedAnswer}
+                </div>
+                <strong>{practiceAwaitingConfirmation
+                  ? "You like this version. Save it for future responses?"
+                  : "Answer updated. Use this version in future responses?"}</strong>
+                <div className={styles.practiceImprovementActions}>
+                  {practiceAwaitingConfirmation ? (
+                    <>
+                      <button type="button" onClick={() => { void savePracticeImprovement(); }}>Yes</button>
+                      <button type="button" onClick={() => { setPracticeAwaitingConfirmation(false); }}>No</button>
+                    </>
+                  ) : (
+                    <>
+                      <button type="button" onClick={() => { void savePracticeImprovement(); }}>Save improvement</button>
+                      <button type="button" onClick={keepPracticeImprovementForChat}>Keep only for this chat</button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void previewPracticeImprovement(
+                            practicePendingImprovement.question,
+                            practicePendingImprovement.originalAnswer,
+                            `${practicePendingImprovement.feedback}\nGive a meaningfully different alternative from this version: ${practicePendingImprovement.correctedAnswer}`,
+                          );
+                        }}
+                      >
+                        More answers
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ) : null}
+            {practiceFilesOpen ? (
+              <div className={styles.practiceFilePicker}>
+                <div className={styles.practiceFilePickerHeader}>
+                  <strong>Choose a file</strong>
+                  <button type="button" onClick={() => { setPracticeFilesOpen(false); }}>Close</button>
+                </div>
+                {researcherFiles.length === 0 ? (
+                  <p>No files yet. Use + → Upload a file.</p>
+                ) : (
+                  <div className={styles.practiceFileCards}>
+                    {researcherFiles.map((file) => (
+                      <div
+                        className={file.name === practiceSelectedFile ? styles.selectedPracticeFileCard : styles.practiceFileCard}
+                        key={`${file.name}-${file.savedAt}`}
+                      >
+                        <button
+                          type="button"
+                          className={styles.practiceFileSelect}
+                          onClick={() => {
+                            if (file.name === practiceSelectedFile) {
+                              setPracticeSelectedFile("");
+                              addPracticeMessage("assistant", `${file.name} is no longer selected.`);
+                            } else {
+                              setPracticeSelectedFile(file.name);
+                              addPracticeMessage("assistant", `${file.name} is selected.`);
+                            }
+                          }}
+                        >
+                          <strong>{file.name}</strong>
+                          <span>{(file.size / 1024 / 1024).toFixed(1)} MB · {file.status}</span>
+                        </button>
+                        <div className={styles.practiceFileCardActions}>
+                          <button
+                            type="button"
+                            className={styles.practiceSelectButton}
+                            onClick={() => {
+                              if (file.name === practiceSelectedFile) {
+                                setPracticeSelectedFile("");
+                                addPracticeMessage("assistant", `${file.name} is no longer selected.`);
+                              } else {
+                                setPracticeSelectedFile(file.name);
+                                addPracticeMessage("assistant", `${file.name} is selected.`);
+                              }
+                            }}
+                          >
+                            {file.name === practiceSelectedFile ? "Deselect" : "Select file"}
+                          </button>
+                          <a
+                            href={`/api/researcher/content?path=${encodeURIComponent(file.id)}`}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            View file
+                          </a>
+                          <a href={`/api/researcher/content?path=${encodeURIComponent(file.id)}&download=1`}>
+                            Download
+                          </a>
+                          <button
+                            type="button"
+                            disabled={isPracticeBusy}
+                            onClick={() => { void trainPracticeFile(file); }}
+                          >
+                            {file.status === "trained" ? "Retrain file" : "Train file"}
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.practiceCancelButton}
+                            disabled={isPracticeBusy}
+                            onClick={() => { void cancelPracticeTraining(file); }}
+                          >
+                            Remove training
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.practiceDeleteButton}
+                            disabled={isPracticeBusy}
+                            onClick={() => { void deletePracticeFile(file); }}
+                          >
+                            Delete file
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
+            {isPracticeBusy ? (
+              <div className={styles.practiceAssistantMessage}>Working on that...</div>
+            ) : null}
+          </div>
+
+          <form className={styles.practiceComposer} onSubmit={submitPracticeMessage}>
+            <div className={styles.practiceAddWrap}>
+              <button
+                type="button"
+                className={styles.practiceAddButton}
+                aria-label="Add Researcher tool"
+                aria-expanded={practiceMenuOpen}
+                onClick={() => { setPracticeMenuOpen((open) => !open); }}
+              >
+                +
+              </button>
+              {practiceMenuOpen ? (
+                <div className={styles.practiceAddMenu}>
+                  <span>Add</span>
+                  <button type="button" onClick={() => { practiceFileInputRef.current?.click(); }}>
+                    <strong>⌕</strong>
+                    <span><b>Upload a file</b><small>PDF, DOCX, PPTX, or image</small></span>
+                  </button>
+                  <button type="button" onClick={showPracticeFiles}>
+                    <strong>▤</strong>
+                    <span><b>My files</b><small>View, select, and train files</small></span>
+                  </button>
+                </div>
+              ) : null}
+              <input
+                ref={practiceFileInputRef}
+                type="file"
+                accept=".pdf,.docx,.pptx,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff"
+                className={styles.practiceHiddenInput}
+                onChange={uploadPracticeFile}
+              />
+            </div>
+            <input
+              value={practiceInput}
+              onChange={(event) => { setPracticeInput(event.target.value); }}
+              placeholder={practiceSelectedFile ? `Ask about ${practiceSelectedFile}...` : "Ask Researcher 2 or add a file..."}
+              disabled={isPracticeBusy}
+            />
+            <button type="submit" disabled={!practiceInput.trim() || isPracticeBusy}>Send</button>
+          </form>
         </section>
         ) : (
         <section className={styles.chat}>

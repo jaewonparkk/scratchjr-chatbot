@@ -65,6 +65,12 @@ type PendingClarification = {
   originalQuestion: string;
 };
 
+type StoredTeacherCorrection = {
+  answer: string;
+  fileName: string;
+  chunkId: string;
+};
+
 let geminiClient: GoogleGenAI | null =
   null;
 
@@ -106,6 +112,59 @@ function readQuestion(
   }
 
   return "";
+}
+
+function normalizeTeacherQuestion(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function findExactTeacherCorrection(
+  question: string,
+): Promise<StoredTeacherCorrection | null> {
+  const directory = path.join(process.cwd(), "knowledge", "processed", "researcher");
+  let fileNames: string[];
+
+  try {
+    fileNames = await fs.readdir(directory);
+  } catch {
+    return null;
+  }
+
+  const normalizedQuestion = normalizeTeacherQuestion(question);
+  for (const fileName of fileNames.filter((name) => name.endsWith(".json"))) {
+    try {
+      const parsed = JSON.parse(
+        await fs.readFile(path.join(directory, fileName), "utf8"),
+      ) as { chunks?: Array<Record<string, unknown>> };
+
+      for (const chunk of [...(parsed.chunks ?? [])].reverse()) {
+        const metadata = chunk.metadata;
+        if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) continue;
+        const record = metadata as Record<string, unknown>;
+        if (record.researcher_correction !== true) continue;
+        if (
+          typeof record.tested_question === "string" &&
+          typeof record.corrected_answer === "string" &&
+          normalizeTeacherQuestion(record.tested_question) === normalizedQuestion
+        ) {
+          return {
+            answer: record.corrected_answer.trim(),
+            fileName,
+            chunkId: typeof chunk.id === "string" ? chunk.id : `teacher-correction-${fileName}`,
+          };
+        }
+      }
+    } catch {
+      // Ignore a transient or malformed file and continue checking the active library.
+    }
+  }
+
+  return null;
 }
 
 function readHistory(
@@ -746,7 +805,13 @@ function buildContext(
     return "No directly relevant uploaded document content was found.";
   }
 
-  return results
+  const prioritizedResults = [...results].sort((first, second) => {
+    const firstCorrection = first.metadata.researcher_correction === true ? 0 : 1;
+    const secondCorrection = second.metadata.researcher_correction === true ? 0 : 1;
+    return firstCorrection - secondCorrection;
+  });
+
+  return prioritizedResults
     .map((result, index) => {
       const location =
         result.page_number !== null
@@ -1091,6 +1156,8 @@ async function generateAnswer(
           "Rules:",
           "1. Answer the user's current question directly.",
           "2. Use only the selected document entries that are relevant.",
+          "2a. An entry whose metadata has researcher_correction=true is an authoritative teacher correction. It overrides conflicting source text and earlier assistant answers, and must be applied to the same question or a clearly equivalent paraphrase.",
+          "2b. For an authoritative teacher correction, preserve its content, meaning, facts, examples, numbers, names, warnings, and ordering. Keep at least 90% of the teacher's wording. Only make minimal grammar, spelling, punctuation, and readability fixes. Do not add, remove, summarize, reinterpret, or contradict information. If it is already clear, return it unchanged.",
           "3. Never combine similarly numbered steps from different documents.",
           "4. If one exact result is supplied, discuss only that result.",
           "5. Preserve exact component names, ordering, colors, polarity, pins, warnings, and instructions.",
@@ -1156,6 +1223,21 @@ export async function POST(
       readHistory(
         body.history,
       );
+
+    const exactTeacherCorrection = await findExactTeacherCorrection(question);
+    if (exactTeacherCorrection) {
+      return Response.json({
+        answer: exactTeacherCorrection.answer,
+        sources: [],
+        images: [],
+        generation: {
+          provider: "gemini",
+          model: GEMINI_MODEL,
+          grounded: true,
+          teacherCorrectionApplied: true,
+        },
+      });
+    }
 
     let retrievalQuestion =
       question;
