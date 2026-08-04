@@ -5,9 +5,9 @@ An AI assistant for educators working with **ScratchJr, micro:bit, and classroom
 Teachers can ask questions in natural language, receive answers grounded in curriculum documents, continue with follow-up questions, and view relevant instructional images and sources.
 
 <p align="center">
-  <img src="docs/assets/assistant-home.png" alt="Blocks & Bots Assistant home screen" width="32%" />
-  <img src="docs/assets/grounded-build-answer.png" alt="Grounded build answer with sources" width="32%" />
-  <img src="docs/assets/visual-retrieval-demo.png" alt="Relevant instructional image retrieval" width="32%" />
+  <img src="docs/assets/assistant-home.png" alt="Blocks & Bots Assistant home screen" width="40%" />
+  <img src="docs/assets/grounded-build-answer.png" alt="Grounded build answer with sources" width="40%" />
+  <img src="docs/assets/visual-retrieval-demo.png" alt="Relevant instructional image retrieval" width="40%" />
 </p>
 
 <p align="center">
